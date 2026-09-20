@@ -1,0 +1,43 @@
+{
+  "name": "magento2-mcp-server",
+  "version": "0.1.0",
+  "private": true,
+  "description": "MCP server exposing Magento 2 Open Source catalog, orders and customers to LLM agents over stdio, with a strict read/write split.",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "magento",
+    "magento2"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "main": "./dist/index.js",
+  "bin": {
+    "magento2-mcp-server": "./dist/index.js"
+  },
+  "files": [
+    "dist",
+    "fixtures"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "inspector": "npm run build && npx @modelcontextprotocol/inspector node dist/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "^2.0.0",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/client": "^2.0.0",
+    "@types/node": "^26.6.2",
+    "typescript": "^7.0.2",
+    "undici": "^8.10.2",
+    "vitest": "^5.0.1"
+  }
+}

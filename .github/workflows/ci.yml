@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  verify:
+    name: Typecheck and test
+    runs-on: ubuntu-latest
+
+    # No secrets and no services by design. The whole suite runs against the
+    # fixture adapter, so CI needs neither a Magento instance nor a token.
+    #
+    # Do NOT add MAGENTO_BASE_URL or MAGENTO_ACCESS_TOKEN here: with the default
+    # MAGENTO_MODE=fixture, either one trips the startup conflict guard and
+    # fails the build. That is the guard working correctly, but it is a
+    # confusing way to discover it.
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Kept as separate steps so a type error and a failing test are
+      # distinguishable from the job summary alone.
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test

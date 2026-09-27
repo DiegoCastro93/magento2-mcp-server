@@ -20,19 +20,19 @@ commits, README all in English).
 
 ---
 
-## Status — 2026-09-23
+## Status — 2026-09-26
 
-Increments 0 and 1 are done, committed and pushed (`3999292 Scaffold project, config layer and CI`);
-CI ran green with every step executed.
+Increments 0 and 1 are done, committed and pushed: `3999292` (scaffold, config guards, CI) and
+`4669022` (CI actions pinned to `@v5`, whose own runtime was the deprecated Node 20 — the project's
+`node-version: '22'` is a different thing and stays — plus this plan under `docs/`).
 
-The queued CI maintenance is also done, but **not yet committed**: `actions/checkout` and
-`actions/setup-node` are now pinned to `@v5`, because those actions' *own* runtime was Node 20 and
-GitHub flags that as deprecated. The project's `node-version: '22'` is a different thing and stays as
-it is; the companion `ubuntu-latest` → Ubuntu 26 notice is informational and needs no change.
+**Increment 2 is done**: the `MagentoClient` port, the `searchCriteria` grammar and the fixture
+adapter, with fixtures shaped from a Magento 2.4.9 sandbox. `npm run typecheck && npm test` is green.
+"Increment 2 — outcome" below records what the sandbox settled and the notes it leaves for later
+increments.
 
-**Next: increment 2 — not started.** Nothing is half-written in the tree: `src/magento/` was drafted
-and cancelled before any file was created. Its design is settled — see "Increment 2 — settled design"
-below.
+**Next: increment 3 — error taxonomy + mapper.** One decision is the owner's before it starts: how to
+tell `AUTH_FAILED` from `PERMISSION_DENIED` when Magento 2.4.9 answers both with the same 401.
 
 This is the versioned copy of the plan. The working copy lives outside the repository; keep the two in
 step whenever either changes, with one deliberate difference: this copy's "Environment blockers"
@@ -337,7 +337,7 @@ Additive, not destructive; *not* idempotent, since calling it twice appends two 
 z.object({
   incrementId:    z.string().min(1),
   comment:        z.string().min(1).max(2000),
-  status:         z.string().optional(),      // recorded alongside; does not transition the order
+  status:         z.string().optional(),      // 2.4.9 applies it to the order: see the increment 7 note
   notifyCustomer: z.boolean().default(false),
   visibleOnFront: z.boolean().default(false),
 })
@@ -363,11 +363,13 @@ optimisation layered *behind* the projection, never as a replacement for it.
   `custom_attributes` is collapsed to an allowlisted handful; everything else is dropped.
 - `OrderSummary`: `incrementId, status, state, createdAt, customerEmail, customerName, grandTotal,
   currency, itemCount`. The internal `entity_id` is *not* exposed — no tool accepts it, so it would
-  be pure token cost and an invitation to hallucinate calls.
+  be pure token cost and an invitation to hallucinate calls. Nor is `protect_code`, the secret behind
+  guest order-view links.
 - `OrderDetail`: summary + `shippingMethod, paymentMethod, billingAddress, shippingAddress,
   items[{sku, name, qty, price, rowTotal}], totals{subtotal, shipping, tax, discount, grandTotal}`
 - `Customer`: `id, email, firstname, lastname, createdAt, group, addresses[...]`. Explicitly denied:
-  password hashes, `rp_token`, `confirmation`, arbitrary `custom_attributes`.
+  `confirmation` (a pending-confirmation token REST does return) and arbitrary `custom_attributes`.
+  REST never returns password hashes or `rp_token`.
 
 **Two kinds of truncation, both announced** (the "aviso al modelo" requirement):
 
@@ -401,7 +403,7 @@ though it does not match `outputSchema`.)
 | `NOT_FOUND` | 404, or empty search for a by-ID lookup | no | Entity-specific: "No product with SKU 'X'. Use search_products to find the correct SKU." |
 | `INVALID_INPUT` | 400, bad filter combination | no | Surfaces Magento's own message, with `%1` parameters interpolated |
 | `AUTH_FAILED` | 401 | no | "The integration token is invalid or expired. A human operator must refresh MAGENTO_ACCESS_TOKEN — retrying will not help." |
-| `PERMISSION_DENIED` | 403 | no | "The integration token lacks the ACL for this resource." |
+| `PERMISSION_DENIED` | 403 (2.4.9 sends 401: see the increment 3 note) | no | "The integration token lacks the ACL for this resource." |
 | `RATE_LIMITED` | 429 | yes | Honours `Retry-After` when present |
 | `UPSTREAM_UNAVAILABLE` | ECONNREFUSED / ENOTFOUND / timeout / abort | yes | "Magento at {host} is not reachable." |
 | `UPSTREAM_ERROR` | 5xx and anything unmapped | yes | Generic |
@@ -482,13 +484,13 @@ Each increment ends green (`npm run typecheck && npm test`) and gets its own com
    **Verify**: typecheck passes; config tests cover both guards exiting non-zero with a message
    naming the offending variable, and a valid fixture-only config starting clean; the workflow goes
    green on the first push.
-2. **← NEXT. Magento port + query builder + fixtures.** `client.ts` interface, `search-criteria.ts`,
-   `fixture-client.ts`, and hand-trimmed fixture JSON (a few products incl. one with a huge
+2. **Done. Magento port + query builder + fixtures.** `client.ts` interface, `search-criteria.ts`,
+   `fixture-client.ts`, and fixture JSON shaped from sandbox captures (a few products incl. one with a huge
    `custom_attributes` block, orders in several statuses, customers, MSI source items).
    **Verify**: unit tests asserting exact query strings for every filter combination, plus fixture
    adapter specs for filtering, ordering, pagination and the absent-entity path.
-   Design is settled — see "Increment 2 — settled design" below.
-3. **Error taxonomy + mapper.** `tool-error.ts`, `map-upstream.ts`, `to-result.ts`.
+   See "Increment 2 — settled design" and "Increment 2 — outcome" below.
+3. **← NEXT. Error taxonomy + mapper.** `tool-error.ts`, `map-upstream.ts`, `to-result.ts`.
    **Verify**: table-driven tests for every row above, plus the no-token-leak and no-stack-trace tests.
 4. **Projection layer.** Allowlists, projectors, truncation + notice collection.
    **Verify**: "huge fixture in, small object out"; assert the output has *no* key outside the
@@ -518,7 +520,8 @@ Four choices taken on 2026-09-23, recorded so the next session does not reopen t
 1. **Fixture payloads are hand-written** from the known shapes of Magento 2.4 REST responses, so the
    increment does not block on access to a live store — there is no Magento install on this host to
    dump from. The cost is that an invented shape can be subtly wrong, so increment 8, the first point
-   where real responses are in hand, verifies them and corrects any drift.
+   where real responses are in hand, verifies them and corrects any drift. **Superseded on
+   2026-09-26, before any fixture was written:** see "Increment 2 — outcome".
 2. **The port's full contract is defined now** and the fixture adapter implements all of it, rather
    than the interface growing increment by increment. This increment already owes fixtures for
    products, orders, customers and MSI source items, so the data lands here either way; deferring the
@@ -576,10 +579,72 @@ Fixture content to write: six products, including one with a deliberately huge `
 block for the projection and truncation tests, one `grouped` product with no `price` and no source
 item, and two products sharing a `created_at` so the secondary sort is observable; five orders
 spanning `complete` / `processing` / `pending` / `canceled` / `holded`, one of them a guest order and
-one already carrying a comment in `status_histories`; two customers, one holding `rp_token` and
-`confirmation` so the projection test has something real to prove it drops; and MSI rows where
+one already carrying a comment in `status_histories`; two customers, one holding
+`confirmation` and an arbitrary custom attribute so the projection test has something real to prove
+it drops (orders carry `protect_code` for the same reason); and MSI rows where
 `salable_quantity` sits below on-hand for at least one SKU, since that gap is precisely what
 `get_product`'s description promises to explain.
+
+---
+
+## Increment 2 — outcome (2026-09-26)
+
+Done. Before any fixture was written, a clean Magento 2.4.9 + sample-data sandbox became available, so
+settled decision 1 changed in its favour: fixture *shapes* come from the sandbox's REST responses, and
+scenario *values* stay hand-set, since sample data ships one customer and two orders. Reading the
+2.4.9 source and those responses settled the following, which the fixture adapter reproduces:
+
+- `like` escaping works: `%\_%` matches only the SKU with a literal underscore, while `%_%` matches
+  every product.
+- A price filter excludes a product with no price (grouped), as NULL against the price index does.
+- `eq` on `customer_email` is case-insensitive, and both two-key sorts order ties as specified.
+- A page past the end is empty and carries the true `total_count`.
+- Search results are byte-identical to the single GET — full `custom_attributes`, links and media —
+  except that they never carry `stock_item`.
+- `stock_item` appears on a single GET only when the token holds
+  `Magento_CatalogInventory::cataloginventory`. Without it, Magento drops the field silently.
+- Salable quantity is a 400 for a type without source items (grouped, configurable, bundle) and a 404
+  for an unknown SKU. `is-product-salable` answers an unknown SKU with a plain `false`, so the port
+  returns `boolean` there. After a default-source save, salable is `max(0, on-hand + reservations)`,
+  through the reservation-aware stock status, and the legacy `stock_item` is synced (forced out of
+  stock at quantity 0).
+- `addOrderComment` follows `OrderService::addComment`: a status outside the order's current state is
+  a 400, a valid one **is applied to the order**, and the entry is prepended.
+- Error bodies are `{message, parameters?}`, with positional (`%1`) or named (`%resources`)
+  placeholders. Developer mode adds a server-side `trace`.
+- Magento sends `null` when a getter is declared non-nullable and omits the field otherwise, so an
+  optional raw field may be absent or `null`.
+- REST never returns `rp_token` or password hashes. It does return a customer's `confirmation` and an
+  order's `protect_code`.
+
+### Notes for later increments
+
+- **Inc 3 — contradicts the error table.** 2.4.9 answers an unrecognised token and a valid token that
+  lacks the ACL with the same 401 and a byte-identical body: `TokenUserContext` falls back to guest on
+  any token failure, and `ErrorProcessor` maps every `AuthorizationException` to 401. The
+  `AUTH_FAILED` / `PERMISSION_DENIED` split cannot come from the status alone; the owner decides how
+  to handle it. `MagentoRequestError` is the mapper's Magento-refusal input. Interpolate positional
+  and named placeholders, and never pass a body through.
+- **Inc 4:** order-item projection must skip child rows (`parent_item_id` set), or a configurable is
+  listed twice. Sample-data orders lack child rows; a checkout creates them. `protect_code` and
+  `confirmation` never reach the model.
+- **Inc 5 — touches a locked decision.** `stock_item.manage_stock` already carries the effective value:
+  `Stock\Item::getManageStock()` resolves store config when `use_config_manage_stock` is true. That
+  answers the manage-stock item under "Assumptions to confirm", so `MAGENTO_DEFAULT_MANAGE_STOCK` and
+  `manageStockSource: 'config-default'` may be unnecessary. Confirm it empirically (flip the config,
+  recapture), then the owner decides. An absent `stock_item` (a token without the ACL) means manage
+  stock and legacy qty are unknown: say so in `notice`. Resolve the default `MAGENTO_FIXTURES_DIR`
+  against the package root, not the cwd, since MCP clients launch servers from an arbitrary cwd.
+- **Inc 6:** the `priceMin`/`priceMax` refine tests truthiness, so `{ priceMin: 5, priceMax: 0 }`
+  passes. Use `!== undefined`.
+- **Inc 7:** the `add_order_comment` contract's "does not transition the order" is false for 2.4.9.
+  Rewrite it, and decide whether `status` stays, given that on a stock install it can flag an order as
+  `fraud`.
+- **Inc 8:** the README documents `oauth/consumer/enable_integration_as_bearer=1` and the ACL list,
+  naming `Magento_CatalogInventory::cataloginventory` (for `stock_item`) next to its near-namesake
+  `Magento_Catalog::catalog_inventory`. The http adapter maps a lookup 404 to `undefined` and any other
+  non-2xx to `MagentoRequestError`, deciding on the status alone: a web server in front of Magento can
+  replace an error body with its own HTML page.
 
 ---
 
@@ -607,5 +672,6 @@ one already carrying a comment in `status_histories`; two customers, one holding
 - `MAGENTO_STOCK_ID=1` is the default stock on a stock installation; parameterised rather than hardcoded.
 - Store config `cataloginventory/item_options/manage_stock` is not reachable via Open Source REST, so
   `MAGENTO_DEFAULT_MANAGE_STOCK` is the documented fallback. If your instance exposes it, increment 5
-  should read it instead and drop the env var.
+  should read it instead and drop the env var. **Answered 2026-09-26:** `stock_item.manage_stock`
+  already carries the effective value — see the increment 5 note.
 - The order status enum matches stock Magento; installs with custom statuses will need it widened.

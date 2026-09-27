@@ -1,0 +1,38 @@
+[
+    {
+        "sku": "24-MB01",
+        "source_code": "default",
+        "quantity": 100,
+        "status": 1
+    },
+    {
+        "sku": "24-MB01",
+        "source_code": "warehouse_eu",
+        "quantity": 40,
+        "status": 1
+    },
+    {
+        "sku": "24-MB04",
+        "source_code": "default",
+        "quantity": 0,
+        "status": 0
+    },
+    {
+        "sku": "24-UG06",
+        "source_code": "default",
+        "quantity": 250,
+        "status": 1
+    },
+    {
+        "sku": "24-MG03",
+        "source_code": "default",
+        "quantity": 15,
+        "status": 1
+    },
+    {
+        "sku": "WS12-M-Orange",
+        "source_code": "default",
+        "quantity": 100,
+        "status": 1
+    }
+]

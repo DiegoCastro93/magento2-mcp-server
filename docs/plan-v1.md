@@ -20,19 +20,22 @@ commits, README all in English).
 
 ---
 
-## Status — 2026-09-26
+## Status — 2026-09-29
 
-Increments 0 and 1 are done, committed and pushed: `3999292` (scaffold, config guards, CI) and
-`4669022` (CI actions pinned to `@v5`, whose own runtime was the deprecated Node 20 — the project's
-`node-version: '22'` is a different thing and stays — plus this plan under `docs/`).
+Increments 0 to 3 are done:
 
-**Increment 2 is done**: the `MagentoClient` port, the `searchCriteria` grammar and the fixture
-adapter, with fixtures shaped from a Magento 2.4.9 sandbox. `npm run typecheck && npm test` is green.
-"Increment 2 — outcome" below records what the sandbox settled and the notes it leaves for later
-increments.
+- `3999292` — scaffold, config guards, CI.
+- `4669022` — CI actions pinned to `@v5` (their own runtime was the deprecated Node 20; the project's
+  `node-version: '22'` is a different thing and stays), plus this plan under `docs/`.
+- `8657d05` — increment 2: the `MagentoClient` port, the `searchCriteria` grammar and the fixture
+  adapter, with fixtures shaped from a Magento 2.4.9 sandbox. "Increment 2 — outcome" below records
+  what the sandbox settled and the notes it leaves for later increments.
+- Increment 3 — the error taxonomy, the upstream mapper and the error-result envelope, resting on
+  three owner decisions recorded under "Error design". Its hash is added here with increment 4.
+  "Increment 3 — outcome" below records what the sandbox source settled.
 
-**Next: increment 3 — error taxonomy + mapper.** One decision is the owner's before it starts: how to
-tell `AUTH_FAILED` from `PERMISSION_DENIED` when Magento 2.4.9 answers both with the same 401.
+**Next: increment 4 — projection layer.** Its inputs are the allowlists under "Projection strategy"
+and the increment 4 note under "Increment 2 — outcome".
 
 This is the versioned copy of the plan. The working copy lives outside the repository; keep the two in
 step whenever either changes, with one deliberate difference: this copy's "Environment blockers"
@@ -142,7 +145,7 @@ magento2-mcp-server/
 │   │   └── truncate.ts             # string truncation + notice collection
 │   ├── errors/
 │   │   ├── tool-error.ts           # ToolError class + code union
-│   │   ├── map-upstream.ts         # HTTP status / network failure → ToolError
+│   │   ├── map-upstream.ts         # port errors (status / unavailable) and defects → ToolError
 │   │   └── to-result.ts            # ToolError → isError tool result
 │   └── shared/
 │       ├── pagination.ts           # clamps, envelope, hasMore/notice construction
@@ -388,34 +391,68 @@ one as complete, so the notice is part of the contract, not a nicety.
 
 Everything the agent sees is a **tool error** — a normal result with `isError: true` — never a
 protocol error, because the docs are explicit that protocol errors are addressed to the host and the
-model never sees them. Handlers throw `ToolError`; a wrapper in `to-result.ts` converts it.
+model never sees them. Handlers throw `ToolError`; `map-upstream.ts` turns anything else they catch
+into one, and `to-result.ts` converts it.
 
 ```ts
 { content: [{ type: 'text', text: '<CODE>: <message> — <suggestion>' }],
-  structuredContent: { error: { code, message, retryable, suggestion? } },
+  structuredContent: { error: { code, message, retryable, suggestion?, retryAfterSeconds? } },
   isError: true }
 ```
-(Output validation is skipped for error results, so attaching `structuredContent` here is safe even
-though it does not match `outputSchema`.)
+(Output validation is skipped for error results — by the SDK's server and client alike, pinned by a
+test — so attaching `structuredContent` here is safe even though it does not match `outputSchema`.)
+
+The mapper's inputs are the port's two error types: `MagentoRequestError` (Magento answered with a
+refusal) and `MagentoUnavailableError` (it could not be asked, or did not answer). Anything else is a
+defect in this server. The calling tool adds a context: whether Magento already accepted the token in
+this invocation, and whether the operation is idempotent.
 
 | Code | Trigger | Retryable | Suggestion given to the agent |
 |---|---|---|---|
-| `NOT_FOUND` | 404, or empty search for a by-ID lookup | no | Entity-specific: "No product with SKU 'X'. Use search_products to find the correct SKU." |
-| `INVALID_INPUT` | 400, bad filter combination | no | Surfaces Magento's own message, with `%1` parameters interpolated |
-| `AUTH_FAILED` | 401 | no | "The integration token is invalid or expired. A human operator must refresh MAGENTO_ACCESS_TOKEN — retrying will not help." |
-| `PERMISSION_DENIED` | 403 (2.4.9 sends 401: see the increment 3 note) | no | "The integration token lacks the ACL for this resource." |
-| `RATE_LIMITED` | 429 | yes | Honours `Retry-After` when present |
-| `UPSTREAM_UNAVAILABLE` | ECONNREFUSED / ENOTFOUND / timeout / abort | yes | "Magento at {host} is not reachable." |
-| `UPSTREAM_ERROR` | 5xx and anything unmapped | yes | Generic |
+| `NOT_FOUND` | 404, or empty search for a by-ID lookup | no | Entity-specific, from the tool: "No product with SKU 'X'. Use search_products to find the correct SKU." A 404 without Magento's own body points at `MAGENTO_BASE_URL`. |
+| `INVALID_INPUT` | 400, bad filter combination | no | Surfaces Magento's own message, with `%1` and `%name` placeholders interpolated |
+| `AUTH_FAILED` | 401 while the token is unproven | no | Names both causes — an invalid, expired or revoked token, or a missing ACL resource — and the resource from `%resources`. A human operator must check both. |
+| `PERMISSION_DENIED` | 401 after another call in the same invocation succeeded; 403 | no | "The integration lacks access to {resource}"; other tools may still work. A 403 comes from a web server, WAF or IP allowlist: Magento's REST API never sends one. |
+| `RATE_LIMITED` | 429 | yes | Honours `Retry-After` when present — a proxy's, since Magento's own 429 carries none |
+| `UPSTREAM_UNAVAILABLE` | not reachable / timeout / interrupted; 502, 503, 504 | yes¹ | "Magento at {host} is not reachable." 503 is also Magento's maintenance mode. |
+| `UPSTREAM_ERROR` | other 5xx | yes¹ | Generic. Magento's 5xx message is withheld. |
+| `UPSTREAM_ERROR` | any other status | no | Something in front of Magento answered; a human operator must check it |
+| `INTERNAL_ERROR` | anything that is not a port error | no | A defect in this server; the details are in the server log |
+
+¹ Not for a non-idempotent call whose outcome is uncertain: see "Writes that may already have been
+applied" below.
+
+**Why a 401 needs the context.** Magento 2.4.9 answers an unusable token and a valid token lacking the
+ACL resource with the same 401 and a byte-identical body: `TokenUserContext::processRequest` falls back
+to guest on any token failure, and the guest then fails `RequestValidator::checkPermissions` exactly
+as the under-privileged integration does. The status alone proves only "refused". A 2xx earlier in the
+same tool invocation proves the token, so the tool reports `tokenAccepted` and the mapper reads the 401
+as `PERMISSION_DENIED`. That covers the ACL gaps most likely in practice — reads granted but not writes,
+catalog granted but not inventory — because they fail on the second call of a multi-call tool. A
+single-call tool keeps the honest two-cause `AUTH_FAILED`. The difference matters to the agent, not only
+to the operator: a dead token means every tool will fail, a missing resource means only this one will.
+
+**Writes that may already have been applied.** `OrderService::addComment` saves the order before it
+sends the customer email, so a timeout or a 5xx does not mean the comment was lost. For a
+non-idempotent call, every failure with an uncertain outcome — timeout, interrupted connection, any
+5xx, a defect — is `retryable: false`, and the suggestion carries the tool's own way to verify ("Check
+the order's comments with get_order before retrying."). The context type makes that sentence
+mandatory for a non-idempotent caller. Failures that certainly did not apply the call keep their usual
+`retryable`: a request that never left, a 400/401/403/404, and a 429, since Magento's backpressure
+check runs before the service.
 
 Hard rules, each with a test:
-- **No stack traces, no raw HTML error pages, no raw Magento bodies** in the result. Full detail goes
-  to `stderr`, which is free on stdio (stdout is the protocol channel and a single `console.log`
-  corrupts it — enforced by a lint rule banning `console.log` under `src/`).
-- **The access token never appears in an error message, a log line or a URL.** A dedicated test
-  asserts the 401 envelope does not contain the token string.
+- **No stack traces, no raw HTML error pages, no raw Magento bodies** in the result. The agent sees
+  Magento's own 4xx message, interpolated, and nothing else of the body; a 5xx message is withheld,
+  since developer mode puts SQL and file paths there, and a defect's message and stack are never
+  echoed. Full detail goes to `stderr`, which is free on stdio (stdout is the protocol channel and a
+  single `console.log` corrupts it — enforced by a lint rule banning `console.log` under `src/`).
+- **The access token never appears in an error message, a log line or a URL.** Tests assert that the
+  401 envelope does not contain the token, even when a trace with arguments carries it, and neither
+  does an envelope built from a failure whose cause does. The log line gets its own test in
+  increment 5, where `stderr` is wired.
 - `retryable` is honest: an expired token is not retryable, and telling an agent otherwise produces a
-  retry loop against a dead credential.
+  retry loop against a dead credential. Nor is a defect, which fails the same way every time.
 
 ---
 
@@ -490,9 +527,10 @@ Each increment ends green (`npm run typecheck && npm test`) and gets its own com
    **Verify**: unit tests asserting exact query strings for every filter combination, plus fixture
    adapter specs for filtering, ordering, pagination and the absent-entity path.
    See "Increment 2 — settled design" and "Increment 2 — outcome" below.
-3. **← NEXT. Error taxonomy + mapper.** `tool-error.ts`, `map-upstream.ts`, `to-result.ts`.
+3. **Done. Error taxonomy + mapper.** `tool-error.ts`, `map-upstream.ts`, `to-result.ts`.
    **Verify**: table-driven tests for every row above, plus the no-token-leak and no-stack-trace tests.
-4. **Projection layer.** Allowlists, projectors, truncation + notice collection.
+   See "Increment 3 — outcome" below.
+4. **← NEXT. Projection layer.** Allowlists, projectors, truncation + notice collection.
    **Verify**: "huge fixture in, small object out"; assert the output has *no* key outside the
    allowlist; assert truncation emits a notice.
 5. **First read tool end-to-end + server wiring.** `get_product` (the richest one — four upstream
@@ -624,7 +662,8 @@ scenario *values* stay hand-set, since sample data ships one customer and two or
   any token failure, and `ErrorProcessor` maps every `AuthorizationException` to 401. The
   `AUTH_FAILED` / `PERMISSION_DENIED` split cannot come from the status alone; the owner decides how
   to handle it. `MagentoRequestError` is the mapper's Magento-refusal input. Interpolate positional
-  and named placeholders, and never pass a body through.
+  and named placeholders, and never pass a body through. **Resolved in increment 3:** the owner chose
+  inference within the invocation; see "Error design".
 - **Inc 4:** order-item projection must skip child rows (`parent_item_id` set), or a configurable is
   listed twice. Sample-data orders lack child rows; a checkout creates them. `protect_code` and
   `confirmation` never reach the model.
@@ -645,6 +684,55 @@ scenario *values* stay hand-set, since sample data ships one customer and two or
   `Magento_Catalog::catalog_inventory`. The http adapter maps a lookup 404 to `undefined` and any other
   non-2xx to `MagentoRequestError`, deciding on the status alone: a web server in front of Magento can
   replace an error body with its own HTML page.
+
+---
+
+## Increment 3 — outcome (2026-09-29)
+
+Done. Before any code, the owner took three decisions, each offered with options checked against the
+2.4.9 sandbox source:
+
+1. **401: infer within the invocation**, over a single code for both readings and over an extra
+   request after each 401. See "Why a 401 needs the context" under "Error design".
+2. **A new `INTERNAL_ERROR`**, not retryable, for anything that is not a port error. The table used to
+   send "anything unmapped" to a retryable `UPSTREAM_ERROR`, which would retry a deterministic bug.
+3. **An `idempotent` context now**, over a dedicated `OUTCOME_UNKNOWN` code and over deferring to
+   increment 7. See "Writes that may already have been applied" under "Error design".
+
+The port gained what the mapper needs to stay adapter-blind: `MagentoRequestError.retryAfterSeconds`
+(the http adapter parses the header, since the port speaks seconds), and `MagentoUnavailableError`
+with a `reason` of `unreachable`, `timeout` or `interrupted`. It must be its own type because `fetch`
+reports a network failure as a `TypeError`, the same class as a defect, and the two call for opposite
+advice.
+
+Read in the source rather than recalled:
+
+- `ErrorProcessor` maps `AuthorizationException` and `AuthenticationException` to 401,
+  `NoSuchEntityException` to 404, and every other `LocalizedException` to 400.
+- `Webapi\Exception::HTTP_FORBIDDEN` is used by no code outside tests, so a 403 is never Magento's.
+- The only 429 is `RequestValidator::checkBackpressure`, which sets no `Retry-After`.
+- Maintenance mode answers REST with a 503 HTML page: `ExceptionHandler::handleBootstrapErrors` →
+  `pub/errors/503.php`.
+- `Phrase\Renderer\Placeholder::render` is `strtr`, with a list's index 0 filling `%1`;
+  `interpolate` reproduces it.
+- `OrderService::addComment` saves the order, then sends the comment email.
+- The SDK skips output validation for an `isError` result on the server (`validateToolOutput`) and
+  on the client (`callTool`).
+
+### Notes for later increments
+
+- **Inc 5:** the handler wrapper composes `toToolResult(toToolError(error, context))`. `get_product`
+  sets `tokenAccepted` from any fulfilled call once `allSettled` resolves, and uses the same mapper to
+  word the `notice` for calls 2–4. The first `stderr` log line — the `ToolError`'s `cause`, with the
+  token redacted — needs its own no-token test.
+- **Inc 7:** `add_order_comment` passes `idempotent: false` with a `verifyBeforeRetry` pointing at
+  `get_order`; `update_product_stock` passes `idempotent: true`, since it sets an absolute value.
+  Its SKU pre-check is also what proves the token before the write.
+- **Inc 8:** the http adapter classifies undici failures into `UnavailableReason` — `unreachable` only
+  when the request certainly never left — parses `Retry-After` into seconds, and leaves `body`
+  undefined for anything that is not Magento's JSON. Open for the owner: a wrong
+  `MAGENTO_BASE_URL` path makes every lookup a 404, which the adapter reads as "does not exist", so a
+  misconfiguration looks like an empty store.
 
 ---
 

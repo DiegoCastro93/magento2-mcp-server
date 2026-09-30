@@ -20,8 +20,9 @@ import type {
  * The contract every adapter keeps:
  *
  * - `undefined` means the entity does not exist.
- * - A throw means the adapter could not answer, or Magento refused, in which
- *   case it is a {@link MagentoRequestError}.
+ * - A throw means Magento refused, which is a {@link MagentoRequestError}, or
+ *   that Magento could not be asked or did not answer, which is a
+ *   {@link MagentoUnavailableError}. Anything else thrown is a defect.
  * - A search never returns `undefined`: no match is an empty page. A page past
  *   the end is empty too, and still carries the true `total_count`.
  * - Every result belongs to the caller and shares no state with the adapter,
@@ -81,12 +82,50 @@ export class MagentoRequestError extends Error {
     readonly status: number;
     /** Absent when the body was not Magento's JSON, such as a proxy's HTML error page. */
     readonly body: RawErrorBody | undefined;
+    /**
+     * The response's `Retry-After`, already converted to seconds. Magento 2.4.9
+     * never sends one, not even with its own 429; a proxy in front of it may.
+     */
+    readonly retryAfterSeconds: number | undefined;
 
-    constructor(status: number, body?: RawErrorBody) {
+    constructor(status: number, body?: RawErrorBody, options: { readonly retryAfterSeconds?: number | undefined } = {}) {
         super(`Magento refused the request with HTTP ${status}${body === undefined ? '' : `: ${body.message}`}`);
         this.name = 'MagentoRequestError';
         this.status = status;
         this.body = body;
+        this.retryAfterSeconds = options.retryAfterSeconds;
+    }
+}
+
+/**
+ * How a request failed to get an answer. What matters is whether it may have
+ * reached Magento: only an `unreachable` request certainly did not, so only
+ * that one is always safe to repeat.
+ *
+ * - `unreachable`: never sent — DNS failure, connection refused, TLS failure.
+ * - `timeout`: sent, and no answer within the configured timeout.
+ * - `interrupted`: sent, and the connection dropped before the answer ended.
+ */
+export type UnavailableReason = 'unreachable' | 'timeout' | 'interrupted';
+
+/**
+ * Magento could not be asked, or did not answer. Only the http adapter throws
+ * it; the fixture adapter always answers.
+ *
+ * It exists as its own type because `fetch` reports a network failure as a
+ * `TypeError`, the same class as a defect in this server, and the two call for
+ * opposite advice to the agent.
+ */
+export class MagentoUnavailableError extends Error {
+    /** The host of `MAGENTO_BASE_URL`, which is not a secret. */
+    readonly host: string;
+    readonly reason: UnavailableReason;
+
+    constructor(host: string, reason: UnavailableReason, options: { readonly cause?: unknown } = {}) {
+        super(`Magento at ${host} is unavailable: ${reason}`, options);
+        this.name = 'MagentoUnavailableError';
+        this.host = host;
+        this.reason = reason;
     }
 }
 

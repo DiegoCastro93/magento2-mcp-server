@@ -146,12 +146,20 @@ export interface RawOrder {
     /** Zero or negative. */
     readonly discount_amount?: number | null;
     readonly grand_total: number;
+    /**
+     * Magento's count of leaf rows (`ResourceModel\Order::calculateItems`): a row
+     * with children is skipped and each child is counted, so a bundle with
+     * three options counts 3 where the order shows one line. Projection counts
+     * lines itself instead.
+     */
     readonly total_item_count?: number | null;
     readonly items: readonly RawOrderItem[];
     readonly billing_address?: RawOrderAddress;
     readonly payment?: {
         readonly method: string;
     };
+    /** The carrier and method titles at the time of the order, such as `Flat Rate - Fixed`. */
+    readonly shipping_description?: string | null;
     /** Newest first. */
     readonly status_histories?: readonly RawOrderStatusHistory[];
     readonly extension_attributes?: {
@@ -162,7 +170,21 @@ export interface RawOrder {
                 readonly method?: string | null;
             };
         }[];
+        /**
+         * The payment's additional information, keyed. `payment.additional_information`
+         * carries the same values without their keys, and its index 0 is not
+         * reliably the method title: `ToOrderPayment::convert` appends
+         * `method_title` after the quote payment's own keys. Values under other
+         * keys can carry gateway data, so only `method_title` is ever read.
+         */
+        readonly payment_additional_info?: readonly RawPaymentAdditionalInfo[];
     };
+}
+
+export interface RawPaymentAdditionalInfo {
+    readonly key: string;
+    /** A string always: Magento serialises any other value to JSON first. */
+    readonly value: string;
 }
 
 export interface RawCustomerAddress {

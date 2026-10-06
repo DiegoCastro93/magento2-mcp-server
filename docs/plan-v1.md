@@ -20,9 +20,9 @@ commits, README all in English).
 
 ---
 
-## Status — 2026-09-29
+## Status — 2026-10-05
 
-Increments 0 to 3 are done:
+Increments 0 to 4 are done. 0 to 3 are committed and pushed, each with CI green:
 
 - `3999292` — scaffold, config guards, CI.
 - `4669022` — CI actions pinned to `@v5` (their own runtime was the deprecated Node 20; the project's
@@ -30,12 +30,17 @@ Increments 0 to 3 are done:
 - `8657d05` — increment 2: the `MagentoClient` port, the `searchCriteria` grammar and the fixture
   adapter, with fixtures shaped from a Magento 2.4.9 sandbox. "Increment 2 — outcome" below records
   what the sandbox settled and the notes it leaves for later increments.
-- Increment 3 — the error taxonomy, the upstream mapper and the error-result envelope, resting on
-  three owner decisions recorded under "Error design". Its hash is added here with increment 4.
-  "Increment 3 — outcome" below records what the sandbox source settled.
+- `7b38617` — increment 3: the error taxonomy, the upstream mapper and the error-result envelope,
+  resting on three owner decisions recorded under "Error design". "Increment 3 — outcome" below
+  records what the sandbox source settled.
+- Increment 4 — the projection layer: strict allowlist schemas, projectors, HTML-to-text, truncation
+  with notice collection, and the pagination envelope, resting on six owner decisions recorded under
+  "Increment 4 — outcome". Its hash is added here with increment 5.
 
-**Next: increment 4 — projection layer.** Its inputs are the allowlists under "Projection strategy"
-and the increment 4 note under "Increment 2 — outcome".
+**Next: increment 5 — first read tool end-to-end + server wiring.** Before any code, the owner settles
+the `manage_stock` question in the increment 5 note under "Increment 2 — outcome", which touches a
+locked decision. Its other inputs are the increment 5 notes under "Increment 3 — outcome" and
+"Increment 4 — outcome".
 
 This is the versioned copy of the plan. The working copy lives outside the repository; keep the two in
 step whenever either changes, with one deliberate difference: this copy's "Environment blockers"
@@ -138,10 +143,13 @@ magento2-mcp-server/
 │   │       ├── update-product-stock.ts
 │   │       └── add-order-comment.ts
 │   ├── projection/
-│   │   ├── fields.ts               # the allowlists, as `as const` tuples
+│   │   ├── fields.ts               # the allowlists, as strict zod schemas
 │   │   ├── product.ts
 │   │   ├── order.ts
 │   │   ├── customer.ts
+│   │   ├── address.ts              # the address shape orders and customers share
+│   │   ├── html-text.ts            # stored HTML → plain text
+│   │   ├── values.ts               # narrowing for raw values: timestamps, decimals, absent vs null
 │   │   └── truncate.ts             # string truncation + notice collection
 │   ├── errors/
 │   │   ├── tool-error.ts           # ToolError class + code union
@@ -276,8 +284,8 @@ Upstream: `GET /V1/orders`, sort `created_at DESC`. Date filters use `from`/`to`
 
 **`get_order`**
 > Get one sales order in full by its increment ID — the customer-facing number such as 000000123,
-> not the internal entity ID. Returns totals, status, addresses and line items, each reduced to an
-> allowlisted set of fields.
+> not the internal entity ID. Returns totals, status, addresses, line items and the 10 most recent
+> comments, each reduced to an allowlisted set of fields.
 
 ```ts
 z.object({ incrementId: z.string().min(1) })
@@ -352,35 +360,53 @@ Upstream: resolve increment ID → entity ID, then `POST /V1/orders/{entityId}/c
 ## Projection strategy (requirement 1)
 
 **One rule: a field reaches the model only if it is named in an allowlist.** Allowlists live in
-`projection/fields.ts` as `as const` tuples, and the projected TypeScript types are *derived* from
-those tuples, so adding a field to the output requires editing the allowlist — it cannot leak in
-through a spread.
+`projection/fields.ts` as strict zod schemas (`z.strictObject`, nested objects strict too). Each
+schema is the one source for a projection's keys, its value types (`z.infer`) and the tool's
+`outputSchema`, so adding a field to the output requires editing the allowlist — it cannot leak in
+through a spread, nor be added in one of those places and forgotten in another. The JSON Schema the
+model reads says `additionalProperties: false`, and the SDK's output validation refuses a stray key.
+(The first draft used `as const` tuples, which carry only the keys; see "Increment 4 — outcome".)
 
 We deliberately do **not** use Magento's `?fields=` query parameter as the contract. It is quirky and
 uneven across endpoints, and it does not exist for the fixture client, which would break the
 real/fixture parity that requirement 4 depends on. It stays available as a later bandwidth
 optimisation layered *behind* the projection, never as a replacement for it.
 
-- `ProductSummary`: `sku, name, price, status, type`
-- `ProductDetail`: summary + `weight, urlKey, shortDescription, categoryIds, createdAt, updatedAt`.
-  `custom_attributes` is collapsed to an allowlisted handful; everything else is dropped.
-- `OrderSummary`: `incrementId, status, state, createdAt, customerEmail, customerName, grandTotal,
-  currency, itemCount`. The internal `entity_id` is *not* exposed — no tool accepts it, so it would
-  be pure token cost and an invitation to hallucinate calls. Nor is `protect_code`, the secret behind
-  guest order-view links.
-- `OrderDetail`: summary + `shippingMethod, paymentMethod, billingAddress, shippingAddress,
-  items[{sku, name, qty, price, rowTotal}], totals{subtotal, shipping, tax, discount, grandTotal}`
-- `Customer`: `id, email, firstname, lastname, createdAt, group, addresses[...]`. Explicitly denied:
-  `confirmation` (a pending-confirmation token REST does return) and arbitrary `custom_attributes`.
-  REST never returns password hashes or `rp_token`.
+- `ProductSummary`: `sku, name, price?, status ('enabled' | 'disabled'), type`. `price` is absent
+  for a type priced by its children, such as grouped.
+- `ProductDetail`: summary + `weight?, urlKey?, shortDescription?, description?, categoryIds?,
+  specialPrice?, specialFromDate?, specialToDate?, countryOfManufacture?, createdAt, updatedAt`. Of
+  `custom_attributes`, only those core scalars are read. Select and multiselect attributes (`color`,
+  `size`, `material`) hold option IDs, and are dropped with everything else. Both descriptions are
+  stored HTML, converted to plain text before truncation.
+- `OrderSummary`: `incrementId, status, state, createdAt, customerEmail, customerName?, grandTotal,
+  currency, itemCount`, where `itemCount` counts lines, not units. The internal `entity_id` is *not*
+  exposed — no tool accepts it, so it would be pure token cost and an invitation to hallucinate
+  calls. Nor is `protect_code`, the secret behind guest order-view links.
+- `OrderDetail`: summary + `shippingMethod?{code?, title?}, paymentMethod?{code, title?},
+  billingAddress?, shippingAddress?, items[{sku, name, qty, price, rowTotal}]` (child rows skipped),
+  `totals{subtotal, shipping?, tax?, discount?, grandTotal}` and `comments[{createdAt, comment?,
+  status?, customerNotified?, visibleOnFront}]`, the 10 most recent, newest first.
+- `Customer`: `id, email, firstname, lastname, createdAt, groupId, addresses[...]`. Explicitly
+  denied: `confirmation` (a pending-confirmation token REST does return) and arbitrary
+  `custom_attributes`. REST never returns password hashes or `rp_token`. The group's name is not
+  resolved: it needs another call and another ACL.
 
-**Two kinds of truncation, both announced** (the "aviso al modelo" requirement):
+Timestamps such as `created_at`, which Magento stores in UTC, become ISO 8601 with a `Z`. Date
+attributes such as `special_from_date` stay `YYYY-MM-DD`, since Magento compares them with the store's
+local date.
 
-1. *Pagination* — when `totalCount > page * pageSize`:
-   `"Showing 20 of 3412 products (page 1 of 171). Narrow the filters or request page 2."`
-2. *Field-level* — long strings (descriptions, comments) are cut at a per-field limit with an
-   explicit marker, and `truncate.ts` collects the affected field names into the same `notice`:
-   `"shortDescription was truncated to 300 characters."`
+**Two kinds of truncation, both announced** (the "aviso al modelo" requirement). A tool handler
+passes one `Notices` collector to every projector it calls, so a result carries a single `notice`:
+
+1. *Pagination* — `shared/pagination.ts`, when `totalCount > page * pageSize`:
+   `"Showing 20 of 3412 products (page 1 of 171). Narrow the filters or request page 2."` A page
+   past the end says so: `"Page 9 is past the end: 3412 products match, in 171 pages."`
+2. *Field-level* — long strings are cut at a per-field limit (`shortDescription` 300, `description`
+   1000, a comment 500 characters, counted in code points) with the marker `…[truncated]`, and
+   `truncate.ts` collects the affected field names into the same `notice`, grouped by limit:
+   `"shortDescription was truncated to 300 characters."` A capped list says so too: `"Showing the
+   10 most recent of 37 comments."`
 
 A model that cannot tell a complete answer from a clipped one will confidently report the clipped
 one as complete, so the notice is part of the contract, not a nicety.
@@ -530,11 +556,12 @@ Each increment ends green (`npm run typecheck && npm test`) and gets its own com
 3. **Done. Error taxonomy + mapper.** `tool-error.ts`, `map-upstream.ts`, `to-result.ts`.
    **Verify**: table-driven tests for every row above, plus the no-token-leak and no-stack-trace tests.
    See "Increment 3 — outcome" below.
-4. **← NEXT. Projection layer.** Allowlists, projectors, truncation + notice collection.
+4. **Done. Projection layer.** Allowlists, projectors, truncation + notice collection.
    **Verify**: "huge fixture in, small object out"; assert the output has *no* key outside the
    allowlist; assert truncation emits a notice.
-5. **First read tool end-to-end + server wiring.** `get_product` (the richest one — four upstream
-   calls, graceful MSI degradation), `server.ts`, `index.ts` with `serveStdio`.
+   See "Increment 4 — outcome" below.
+5. **← NEXT. First read tool end-to-end + server wiring.** `get_product` (the richest one — four
+   upstream calls, graceful MSI degradation), `server.ts`, `index.ts` with `serveStdio`.
    **Verify**: in-process client test via `InMemoryTransport.createLinkedPair()`; a degradation
    suite that fails each of calls 2–4 independently and asserts the tool still answers with the
    remaining data plus a `notice` (this is what proves `allSettled` was used and not `Promise.all`);
@@ -666,7 +693,7 @@ scenario *values* stay hand-set, since sample data ships one customer and two or
   inference within the invocation; see "Error design".
 - **Inc 4:** order-item projection must skip child rows (`parent_item_id` set), or a configurable is
   listed twice. Sample-data orders lack child rows; a checkout creates them. `protect_code` and
-  `confirmation` never reach the model.
+  `confirmation` never reach the model. **Done in increment 4**, each with a test.
 - **Inc 5 — touches a locked decision.** `stock_item.manage_stock` already carries the effective value:
   `Stock\Item::getManageStock()` resolves store config when `use_config_manage_stock` is true. That
   answers the manage-stock item under "Assumptions to confirm", so `MAGENTO_DEFAULT_MANAGE_STOCK` and
@@ -733,6 +760,84 @@ Read in the source rather than recalled:
   undefined for anything that is not Magento's JSON. Open for the owner: a wrong
   `MAGENTO_BASE_URL` path makes every lookup a 404, which the adapter reads as "does not exist", so a
   misconfiguration looks like an empty store.
+
+---
+
+## Increment 4 — outcome (2026-10-05)
+
+Done. Before any code, the owner took six decisions, each offered with options checked against the
+fixtures and the 2.4.9 sandbox source:
+
+1. **Descriptions: both, as plain text.** `ProductDetail` named only `shortDescription`, but five of
+   the six product fixtures, like the sample-data catalogue, carry only `description` (244 to 2,672
+   characters of HTML). Both are separate optional fields, each converted to text and then truncated
+   against its own limit.
+2. **Custom attributes: core scalars only** — `special_price`, `special_from_date`, `special_to_date`
+   and `country_of_manufacture`. Select attributes hold option IDs (`"56"`, `"33,35,160"`). A label
+   needs `GET /V1/products/attributes/{code}/options`, a call per attribute and the ACL
+   `Magento_Catalog::attributes_attributes`, and which select codes matter is store-specific (`size`
+   and `material` come from the Luma sample data). Labels can be added later behind the same
+   allowlist.
+3. **Customer group: `groupId` only.** The name needs `GET /V1/customerGroups/{id}` and the ACL
+   `Magento_Customer::group`.
+4. **Shipping and payment methods: code and title.** No tool accepts a method code, but it is the
+   stable identifier when a title is renamed or shared by two methods.
+5. **`OrderDetail` gains `comments`, capped at the 10 most recent.** Including them was forced:
+   increment 3's verify suggestion for `add_order_comment` sends the agent to `get_order`'s comments,
+   which the allowlist lacked. The cap keeps a long-lived order bounded, and a retry check only needs
+   the newest entry, since Magento prepends.
+6. **Allowlists are strict zod schemas**, over `as const` tuples, which carry only the keys and would
+   have left the value types and the `outputSchema` to be kept in step by hand.
+
+Read in the fixtures, whose shapes come from the sandbox:
+
+- `url_key`, `category_ids`, `description` and `short_description` arrive in `custom_attributes`, not
+  as top-level fields; `category_ids` is a list of strings, projected as numbers to match
+  `search_products`' `categoryId`. `weight` is top-level but absent on most sample products.
+- An order has no top-level `shipping_address`: it lives in
+  `extension_attributes.shipping_assignments[0].shipping.address`. `billing_address` is top-level.
+- An order carries its shipping method twice, as `shipping_description` ("Flat Rate - Fixed") and as
+  the assignment's `method` ("flatrate_flatrate").
+- No order fixture has a child row, so the child-row tests build their own data inline.
+
+Read in the source, or run against the installed packages:
+
+- **The payment title is not reliably `payment.additional_information[0]`**, as the pre-code reading
+  of the fixtures had it. `Quote\Payment\ToOrderPayment::convert` merges `method_title` after the
+  quote payment's own keys, so index 0 holds it only for a method that stores nothing else, such as
+  `checkmo`. `OrderRepository::setPaymentAdditionalInfo` exposes the same data keyed, as
+  `extension_attributes.payment_additional_info`, with every value a string. Only `method_title` is
+  read, since other keys can carry gateway data.
+- `total_item_count` counts leaf rows (`ResourceModel\Order::calculateItems`): a bundle with three
+  options counts 3 while `get_order` lists one line. `itemCount` counts the rows without
+  `parent_item_id` instead, so it always equals `get_order`'s `items.length`.
+- Page Builder ships with 2.4.9 and saves a `<style>` block (`data-pb-style`) with its content, so
+  HTML-to-text drops `style` and `script` contents, not just their tags.
+- The admin renders an order comment with
+  `escapeHtml($comment, ['b', 'br', 'strong', 'i', 'u', 'a'])`, so comments go through the
+  same conversion.
+- `Type\Price::calculateSpecialPrice` applies `min($finalPrice, $specialPrice)` while
+  `isScopeDateInInterval` holds for the store, so the special dates are store-local calendar dates,
+  not UTC instants.
+- zod 4.6.5: `z.toJSONSchema` of a `z.strictObject` emits `additionalProperties: false`, and
+  `.extend()` keeps the object strict.
+
+Token budget, measured: 50 `ProductSummary` results take 5,141 bytes, and the guard's ceiling is
+6,200. The largest fixture's `ProductDetail` takes 1,641 bytes against 6,852 raw, with a ceiling of
+2,000; its two descriptions at their limits are most of it.
+
+`shared/pagination.ts`, which the plan assigned to no increment, landed here: the pagination notice is
+the first of the two kinds of truncation. `projection/` also gained `html-text.ts`, `values.ts` and
+`address.ts`.
+
+### Notes for later increments
+
+- **Inc 5:** `get_product`'s `outputSchema` is built from `ProductDetailSchema`, next to the stock
+  schema that increment defines. The handler creates one `Notices`, passes it to
+  `projectProductDetail`, adds the stock-degradation sentences to it, and reads `toNotice()` last.
+- **Inc 6:** the search tools use `paginate` and `paginationNotice` and add the sentence to their
+  `Notices`. `get_customer`'s description says the group is a numeric ID whose name is not resolved.
+- **Inc 8:** no new ACL resource is needed, so the README's list stays as it is.
 
 ---
 

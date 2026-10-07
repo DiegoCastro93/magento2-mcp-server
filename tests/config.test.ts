@@ -1,5 +1,7 @@
+import { isAbsolute, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { ConfigError, loadConfig } from '../src/config.js';
+import { PACKAGE_ROOT } from '../src/package-root.js';
 
 const TOKEN = 'abc123secrettoken';
 
@@ -21,10 +23,21 @@ describe('loadConfig', () => {
             expect(config.mode).toBe('fixture');
             expect(config.sourceCode).toBe('default');
             expect(config.stockId).toBe(1);
-            expect(config.defaultManageStock).toBe(true);
             expect(config.timeoutMs).toBe(10_000);
-            expect(config.fixturesDir).toBe('./fixtures');
             expect(config.logLevel).toBe('info');
+        });
+
+        // MCP clients launch servers from an arbitrary cwd, so a relative default
+        // would find the fixtures only when started from the package root.
+        it("defaults the fixtures to the package's own directory, as an absolute path", () => {
+            const { fixturesDir } = loadConfig({});
+
+            expect(isAbsolute(fixturesDir)).toBe(true);
+            expect(fixturesDir).toBe(join(PACKAGE_ROOT, 'fixtures'));
+        });
+
+        it('keeps a configured fixtures directory as given', () => {
+            expect(loadConfig({ MAGENTO_FIXTURES_DIR: './my-fixtures' }).fixturesDir).toBe('./my-fixtures');
         });
 
         it('registers no write tools by default', () => {
@@ -167,18 +180,6 @@ describe('loadConfig', () => {
     describe('scalar validation', () => {
         it('rejects a non-numeric stock id', () => {
             expect(expectProblems({ MAGENTO_STOCK_ID: 'one' })[0]).toContain('MAGENTO_STOCK_ID');
-        });
-
-        it('rejects a non-boolean manage-stock default', () => {
-            expect(expectProblems({ MAGENTO_DEFAULT_MANAGE_STOCK: 'maybe' })[0]).toContain(
-                'MAGENTO_DEFAULT_MANAGE_STOCK'
-            );
-        });
-
-        it('accepts the documented boolean spellings', () => {
-            expect(loadConfig({ MAGENTO_DEFAULT_MANAGE_STOCK: 'false' }).defaultManageStock).toBe(false);
-            expect(loadConfig({ MAGENTO_DEFAULT_MANAGE_STOCK: '0' }).defaultManageStock).toBe(false);
-            expect(loadConfig({ MAGENTO_DEFAULT_MANAGE_STOCK: 'TRUE' }).defaultManageStock).toBe(true);
         });
 
         it('rejects an unknown log level', () => {

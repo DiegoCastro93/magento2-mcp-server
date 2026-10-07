@@ -20,9 +20,9 @@ commits, README all in English).
 
 ---
 
-## Status — 2026-10-05
+## Status — 2026-10-06
 
-Increments 0 to 4 are done. 0 to 3 are committed and pushed, each with CI green:
+Increments 0 to 5 are done. 0 to 4 are committed and pushed, each with CI green:
 
 - `3999292` — scaffold, config guards, CI.
 - `4669022` — CI actions pinned to `@v5` (their own runtime was the deprecated Node 20; the project's
@@ -33,14 +33,20 @@ Increments 0 to 4 are done. 0 to 3 are committed and pushed, each with CI green:
 - `7b38617` — increment 3: the error taxonomy, the upstream mapper and the error-result envelope,
   resting on three owner decisions recorded under "Error design". "Increment 3 — outcome" below
   records what the sandbox source settled.
-- Increment 4 — the projection layer: strict allowlist schemas, projectors, HTML-to-text, truncation
-  with notice collection, and the pagination envelope, resting on six owner decisions recorded under
-  "Increment 4 — outcome". Its hash is added here with increment 5.
+- `6a47ab5` — increment 4: the projection layer — strict allowlist schemas, projectors, HTML-to-text,
+  truncation with notice collection, and the pagination envelope, resting on six owner decisions
+  recorded under "Increment 4 — outcome".
+- Increment 5 — `get_product` end to end, the server with its tool wrapper, the stderr logger and
+  the stdio entrypoint, resting on four owner decisions recorded under "Increment 5 — outcome". Its
+  hash is added here with increment 6.
 
-**Next: increment 5 — first read tool end-to-end + server wiring.** Before any code, the owner settles
-the `manage_stock` question in the increment 5 note under "Increment 2 — outcome", which touches a
-locked decision. Its other inputs are the increment 5 notes under "Increment 3 — outcome" and
-"Increment 4 — outcome".
+**Next: increment 6 — the remaining read tools: `search_products`, `search_orders`, `get_order` and
+`get_customer`. Not started.** Its inputs:
+
+- their contracts under "Tool contracts";
+- the increment 6 notes under "Increment 2 — outcome" (the `priceMin`/`priceMax` refine), "Increment
+  4 — outcome" (`paginate`, `paginationNotice`, the customer group sentence) and "Increment 5 —
+  outcome" (one `defineX(deps)` per tool, and what the server's wrapper already does for it).
 
 This is the versioned copy of the plan. The working copy lives outside the repository; keep the two in
 step whenever either changes, with one deliberate difference: this copy's "Environment blockers"
@@ -76,12 +82,13 @@ neighbouring projects — which belongs in the working copy and not in a publish
    sets `compilerOptions.types: ["node"]`, without which every `process.env` reference fails to
    compile.
 4. **Verify SDK surface against the installed `.d.ts` as the first act of increment 1.** —
-   **Resolved in increment 1**, and pinned by `tests/sdk-contract.test.ts`: `McpServer` from
+   **Resolved in increments 1 and 5**, and pinned by `tests/sdk-contract.test.ts`: `McpServer` from
    `@modelcontextprotocol/server`, the `registerTool(name, config, handler)` shape, all four
    annotation hints surviving the round trip to `tools/list`, `structuredContent` validated against
    `outputSchema`, and a thrown handler becoming a readable tool error rather than a protocol error.
-   Still unverified, because nothing needs it until increment 5: the stdio transport handle — the
-   contract test uses `InMemoryTransport.createLinkedPair()`. Original note: every SDK
+   The stdio transport handle was read in increment 5: `serveStdio(factory, options)` from
+   `@modelcontextprotocol/server/stdio` returns `{ close() }` synchronously and may call the factory
+   more than once per process; see "Increment 5 — outcome". Original note: every SDK
    snippet below follows the published v2 docs (`ts.sdk.modelcontextprotocol.io/v2`), but the exact
    export names (`McpServer` vs `Server`), the `serveStdio` handle shape, and whether the
    `annotations` type accepts `openWorldHint` should be confirmed from the shipped types, not from
@@ -96,7 +103,7 @@ neighbouring projects — which belongs in the working copy and not in a publish
 | Result shape | `structuredContent` validated by `outputSchema`; the text block carries only a one-line summary plus any truncation notice. Not duplicated. |
 | Adapter | `MagentoClient` port with `http` and `fixture` implementations for runtime, **plus** an HTTP-level mock (undici `MockAgent`, falling back to MSW) used only in tests for the HTTP client and the error mapper. |
 | Write gate | Per-tool allowlist: `MAGENTO_MCP_WRITE_TOOLS=update_product_stock,add_order_comment`. Empty/unset registers no write tools. Unknown names fail startup. |
-| Inventory | MSI `source-items`, with `source_code` fixed by env var (default `default`). `get_product` exposes `is_salable`, `manage_stock` (resolving `use_config_manage_stock` inheritance), `salable_quantity` and `source_quantity`. Multi-store and source selection stay out of scope. |
+| Inventory | MSI `source-items`, with `source_code` fixed by env var (default `default`). `get_product` exposes `is_salable`, `manage_stock` (as Magento resolves it, `use_config_manage_stock` inheritance included; see "Increment 5 — outcome"), `salable_quantity` and `source_quantity`. Multi-store and source selection stay out of scope. |
 
 **`MAGENTO_MODE` defaults to `fixture`**, so a fresh clone runs with zero configuration — confirmed,
 on the condition below.
@@ -122,17 +129,22 @@ not a control.
 ```
 magento2-mcp-server/
 ├── src/
-│   ├── index.ts                    # entrypoint: load config → build server → serveStdio
-│   ├── server.ts                   # createServer(deps): registers read tools, gates write tools
-│   ├── config.ts                   # zod-validated env, fails fast with a readable report
+│   ├── index.ts                    # entrypoint: stdout guard → config → fixtures → serveStdio
+│   ├── server.ts                   # createServer(deps), and the wrapper every tool call passes through
+│   ├── config.ts                   # validated env, fails fast with a readable report
+│   ├── package-root.ts             # the package root, for paths the package owns
+│   ├── stdout-guard.ts             # points the global console at stderr
 │   ├── magento/
 │   │   ├── client.ts               # MagentoClient port (interface) + shared DTO types
 │   │   ├── http-client.ts          # fetch + bearer token + timeout + response→error mapping
 │   │   ├── fixture-client.ts       # serves canned JSON from fixtures/
+│   │   ├── product-types.ts        # which product types carry stock of their own
 │   │   ├── search-criteria.ts      # searchCriteria[...] query builder
 │   │   └── raw-types.ts            # partial types for the raw Magento payloads we touch
 │   ├── tools/
-│   │   ├── registry.ts             # ToolDefinition type + read/write tool lists
+│   │   ├── names.ts                # the canonical tool names
+│   │   ├── definition.ts           # ToolDefinition, read annotations, retry context
+│   │   ├── registry.ts             # read/write tool lists
 │   │   ├── read/
 │   │   │   ├── search-products.ts
 │   │   │   ├── get-product.ts
@@ -145,6 +157,7 @@ magento2-mcp-server/
 │   ├── projection/
 │   │   ├── fields.ts               # the allowlists, as strict zod schemas
 │   │   ├── product.ts
+│   │   ├── stock.ts                # get_product's stock, from three independent answers
 │   │   ├── order.ts
 │   │   ├── customer.ts
 │   │   ├── address.ts              # the address shape orders and customers share
@@ -157,7 +170,7 @@ magento2-mcp-server/
 │   │   └── to-result.ts            # ToolError → isError tool result
 │   └── shared/
 │       ├── pagination.ts           # clamps, envelope, hasMore/notice construction
-│       └── result.ts               # ok() / fail() result builders
+│       └── logger.ts               # stderr log, secrets redacted at the sink
 ├── fixtures/
 │   ├── products/ orders/ customers/ inventory/
 ├── tests/
@@ -165,7 +178,10 @@ magento2-mcp-server/
 │   ├── projection/                 # allowlist + truncation specs
 │   ├── magento/                    # search-criteria + http-client (undici MockAgent)
 │   ├── errors/                     # upstream → envelope mapping
-│   └── server/                     # tools/list gating snapshots
+│   ├── shared/                     # pagination, logger
+│   ├── server/                     # tools/list, the wrapper, the envelope; gating from increment 7
+│   ├── process/                    # the built server, launched over stdio
+│   └── stdout-discipline.test.ts   # no console or process.stdout under src/
 ├── .github/
 │   └── workflows/
 │       └── ci.yml                  # typecheck + test on every push and PR
@@ -177,7 +193,8 @@ magento2-mcp-server/
 └── README.md
 ```
 
-Each tool file exports a `defineX(deps): ToolDefinition` returning `{ name, config, handler }`.
+Each tool file exports a `defineX(deps): ToolDefinition` returning its name, description, schemas,
+annotations, retry context and handler (`tools/definition.ts`).
 Registration is then data-driven, and every handler is unit-testable without constructing a server.
 
 ---
@@ -225,7 +242,8 @@ Upstream: `GET /V1/products` with filter groups (groups AND together, filters wi
 > Get detail and current inventory for exactly one product, by SKU. Returns an allowlisted subset of
 > the product's attributes plus its stock at the configured inventory source: on-hand source
 > quantity, salable quantity (on-hand minus open order reservations), and whether Magento currently
-> considers it sellable. Use search_products first if you do not know the exact SKU.
+> considers it sellable. A stock field that is absent is unknown, not zero; notice says why. Use
+> search_products first if you do not know the exact SKU.
 
 ```ts
 z.object({ sku: z.string().min(1) })
@@ -248,20 +266,21 @@ Failure handling is therefore per-call:
   read-only requests; that is an acceptable price for keeping the latency at one round trip.
 - **Calls 2–4 degrade individually.** MSI modules disabled, a non-MSI install, or one endpoint
   timing out must still produce an answer: return the attributes plus whatever stock data did
-  resolve, fall back to legacy `extension_attributes.stock_item.qty` from call 1, and name the
+  resolve, fall back to legacy `extension_attributes.stock_item.qty` from call 1 when the configured
+  source is `default` (the only source the legacy item mirrors), and name the
   missing pieces in `notice` so the model knows the stock picture is partial rather than assuming a
   missing field means zero.
 
 Every stock field is therefore optional in `outputSchema`, and a test drives each of calls 2–4 to
 failure independently to prove the other three still answer.
 
-`manage_stock` resolution: `extension_attributes.stock_item.use_config_manage_stock === true` means
-the effective value comes from store config `cataloginventory/item_options/manage_stock`, which Open
-Source does not expose over REST. We fall back to `MAGENTO_DEFAULT_MANAGE_STOCK` and report which
-source was used:
+`manageStock` is `extension_attributes.stock_item.manage_stock`, which already carries the effective
+value: `Stock\Item::getManageStock()` returns the store configuration when `use_config_manage_stock` is
+true. Magento omits `stock_item` when the integration lacks `Magento_CatalogInventory::cataloginventory`;
+`manageStock` is then absent and the notice says why. A type without stock of its own (grouped,
+configurable, bundle) keeps only `isSalable`, and the notice says its quantities live on its children:
 ```ts
-stock: { sourceCode, sourceQuantity, sourceStatus, salableQuantity, isSalable,
-         manageStock: boolean, manageStockSource: 'product' | 'config-default' }
+stock: { sourceCode, sourceQuantity?, sourceStatus?, salableQuantity?, isSalable?, manageStock? }
 ```
 
 **`search_orders`**
@@ -472,11 +491,13 @@ Hard rules, each with a test:
   Magento's own 4xx message, interpolated, and nothing else of the body; a 5xx message is withheld,
   since developer mode puts SQL and file paths there, and a defect's message and stack are never
   echoed. Full detail goes to `stderr`, which is free on stdio (stdout is the protocol channel and a
-  single `console.log` corrupts it — enforced by a lint rule banning `console.log` under `src/`).
+  single `console.log` corrupts it — so `console` is banned under `src/`, enforced by
+  `tests/stdout-discipline.test.ts`, and `src/stdout-guard.ts` points the global `console` at stderr
+  for the dependencies).
 - **The access token never appears in an error message, a log line or a URL.** Tests assert that the
   401 envelope does not contain the token, even when a trace with arguments carries it, and neither
-  does an envelope built from a failure whose cause does. The log line gets its own test in
-  increment 5, where `stderr` is wired.
+  does an envelope built from a failure whose cause does. The log redacts secrets at the sink, which
+  `tests/shared/logger.test.ts` pins for a trace, a defect's message and an encoded URL.
 - `retryable` is honest: an expired token is not retryable, and telling an agent otherwise produces a
   retry loop against a dead credential. Nor is a defect, which fails the same way every time.
 
@@ -493,10 +514,9 @@ MAGENTO_BASE_URL=                     # required when MAGENTO_MODE=http
 MAGENTO_ACCESS_TOKEN=                 # required when MAGENTO_MODE=http; integration token
 MAGENTO_SOURCE_CODE=default           # MSI source for stock read/write
 MAGENTO_STOCK_ID=1                    # MSI stock for salable-quantity / is-salable
-MAGENTO_DEFAULT_MANAGE_STOCK=true     # fallback when use_config_manage_stock is true
 MAGENTO_MCP_WRITE_TOOLS=              # empty = read-only. e.g. update_product_stock,add_order_comment
 MAGENTO_TIMEOUT_MS=10000
-MAGENTO_FIXTURES_DIR=./fixtures
+MAGENTO_FIXTURES_DIR=                 # default: the package's own fixtures/, whatever the cwd
 LOG_LEVEL=info
 ```
 
@@ -560,14 +580,15 @@ Each increment ends green (`npm run typecheck && npm test`) and gets its own com
    **Verify**: "huge fixture in, small object out"; assert the output has *no* key outside the
    allowlist; assert truncation emits a notice.
    See "Increment 4 — outcome" below.
-5. **← NEXT. First read tool end-to-end + server wiring.** `get_product` (the richest one — four
+5. **Done. First read tool end-to-end + server wiring.** `get_product` (the richest one — four
    upstream calls, graceful MSI degradation), `server.ts`, `index.ts` with `serveStdio`.
    **Verify**: in-process client test via `InMemoryTransport.createLinkedPair()`; a degradation
    suite that fails each of calls 2–4 independently and asserts the tool still answers with the
    remaining data plus a `notice` (this is what proves `allSettled` was used and not `Promise.all`);
    call 1 failing still yields `NOT_FOUND`; manual smoke with
    `npx @modelcontextprotocol/inspector node dist/index.js`.
-6. **Remaining read tools.** `search_products`, `search_orders`, `get_order`, `get_customer`.
+   See "Increment 5 — outcome" below.
+6. **← NEXT. Remaining read tools.** `search_products`, `search_orders`, `get_order`, `get_customer`.
    **Verify**: per-tool specs incl. NOT_FOUND paths and pagination notices.
 7. **Write tools + the gate.** Both write tools, allowlist parsing, annotations.
    **Verify**: `tools/list` omits both when the allowlist is empty; lists exactly one when only one is
@@ -701,6 +722,7 @@ scenario *values* stay hand-set, since sample data ships one customer and two or
   recapture), then the owner decides. An absent `stock_item` (a token without the ACL) means manage
   stock and legacy qty are unknown: say so in `notice`. Resolve the default `MAGENTO_FIXTURES_DIR`
   against the package root, not the cwd, since MCP clients launch servers from an arbitrary cwd.
+  **Resolved in increment 5:** the owner dropped both; see "Increment 5 — outcome".
 - **Inc 6:** the `priceMin`/`priceMax` refine tests truthiness, so `{ priceMin: 5, priceMax: 0 }`
   passes. Use `!== undefined`.
 - **Inc 7:** the `add_order_comment` contract's "does not transition the order" is false for 2.4.9.
@@ -751,7 +773,7 @@ Read in the source rather than recalled:
 - **Inc 5:** the handler wrapper composes `toToolResult(toToolError(error, context))`. `get_product`
   sets `tokenAccepted` from any fulfilled call once `allSettled` resolves, and uses the same mapper to
   word the `notice` for calls 2–4. The first `stderr` log line — the `ToolError`'s `cause`, with the
-  token redacted — needs its own no-token test.
+  token redacted — needs its own no-token test. **Done in increment 5.**
 - **Inc 7:** `add_order_comment` passes `idempotent: false` with a `verifyBeforeRetry` pointing at
   `get_order`; `update_product_stock` passes `idempotent: true`, since it sets an absolute value.
   Its SKU pre-check is also what proves the token before the write.
@@ -835,9 +857,84 @@ the first of the two kinds of truncation. `projection/` also gained `html-text.t
 - **Inc 5:** `get_product`'s `outputSchema` is built from `ProductDetailSchema`, next to the stock
   schema that increment defines. The handler creates one `Notices`, passes it to
   `projectProductDetail`, adds the stock-degradation sentences to it, and reads `toNotice()` last.
+  **Done in increment 5.**
 - **Inc 6:** the search tools use `paginate` and `paginationNotice` and add the sentence to their
   `Notices`. `get_customer`'s description says the group is a numeric ID whose name is not resolved.
 - **Inc 8:** no new ACL resource is needed, so the README's list stays as it is.
+
+---
+
+## Increment 5 — outcome (2026-10-06)
+
+Done. Before any code, the owner took four decisions, each offered with options checked against the
+2.4.9 sandbox and the installed packages:
+
+1. **`manageStock`: the value only.** `MAGENTO_DEFAULT_MANAGE_STOCK` and `manageStockSource` are gone.
+   The indicator existed to flag a guessed fallback; with Magento's own value there is no guess, and
+   where the setting lives is nothing a tool can act on. Keeping the env var was not offered: it would
+   replace a value Magento already resolved with a guess that can contradict the store.
+2. **No flip capture.** The sandbox already settled it without one; see below.
+3. **The stdout ban is a Vitest spec**, `tests/stdout-discipline.test.ts`, which scans `src/` for
+   `console` and `process.stdout`, over a linter. `src/stdout-guard.ts`, imported first by
+   `index.ts`, points the global `console` at stderr for the dependencies the scan cannot see.
+4. **A real process test.** `tests/process/startup.test.ts` builds `dist/` and launches it over stdio.
+
+Read in the sandbox and the installed packages:
+
+- **`stock_item.manage_stock` is the effective value.** All 2,040 `cataloginventory_stock_item` rows
+  hold `manage_stock = 0` with `use_config_manage_stock = 1`, and `core_config_data` has no
+  `cataloginventory/item_options/manage_stock` row, so the `config.xml` default of 1 applies. The
+  REST capture of 24-MB01 says `"manage_stock": true`. `Stock\Item::getManageStock()` reads the store
+  configuration when the product inherits it.
+- **The legacy `stock_item.qty` mirrors the `default` source only.** The legacy sync plugins skip any
+  other source code, so the fallback for a failed source-items call applies only there.
+- **ESLint is out of reach of TypeScript 7.** `typescript` 7.0.2 is the native port and ships no
+  compiler API, and `typescript-eslint` 8.71.1 requires `typescript <6.1.0`. Hence a text scan.
+- **`serveStdio` may build more than one server per process.** It returns `{ close() }`
+  synchronously, and calls the factory with `{ era }` both for a discovery probe it discards and for
+  the instance it keeps. `createServer` therefore does no I/O: config and fixtures load once, before
+  it.
+- **The SDK's output validation sits outside the envelope.** A `structuredContent` that fails the
+  `outputSchema` becomes the SDK's own `isError` text: no `structuredContent.error`, nothing logged,
+  and a message that names the offending keys, though not their values. The server's wrapper checks every answer itself and turns a
+  mismatch into a logged `INTERNAL_ERROR`. An input-schema failure still gets the SDK's text, pinned
+  as known behaviour in `tests/server/server.test.ts`.
+- **The SDK's stdio client skips a stdout line that is not JSON**: `ReadBuffer.readMessage` continues
+  past a `SyntaxError`. It therefore cannot detect a polluted stdout, so the process spec records
+  stdout itself and parses every line.
+
+What landed, beyond the tool itself:
+
+- `projection/stock.ts` gives one notice sentence per missing stock field, grouped by cause. A type
+  without stock of its own keeps only `isSalable` and says why, without logging the refusals its type
+  draws by design.
+- `tools/definition.ts` holds `ToolDefinition`, `READ_ANNOTATIONS` and the backstop `RetryContext`,
+  and `tools/registry.ts` lists the tools. A handler throws a `ToolError` mapped with its own context.
+  The wrapper in `server.ts` maps anything else with `tokenAccepted: false` and the tool's `retry`,
+  logs every failure, and checks every answer against the `outputSchema`. It builds both kinds of
+  result, so `shared/result.ts` was not needed.
+- `shared/logger.ts` writes stderr lines at levels from `LOG_LEVEL`, with the cause chain and
+  Magento's full body. It **redacts secrets at the sink**, URL-encoded forms included.
+- `index.ts`: a config error or a failed start exits 1 with stdout untouched. The fixture banner
+  prints once the fixtures have loaded, whatever the log level. `MAGENTO_MODE=http` exits 1 until
+  increment 8 brings the adapter.
+- The default `MAGENTO_FIXTURES_DIR` resolves against the package root (`package-root.ts`), so the
+  server starts from any cwd.
+- `magento/product-types.ts` shares `hasOwnStock` between the fixture adapter and the tool.
+
+Token budget, measured: the largest fixture's whole answer, product and stock, takes 1,898 bytes,
+against a ceiling of 2,100.
+
+### Notes for later increments
+
+- **Inc 6:** each tool is a `defineX(deps)` in `tools/read/`, listed in `readTools`, and the wrapper
+  already handles errors, logging and output checking. Until then, `get_product`'s description and
+  its `NOT_FOUND` suggestion name `search_products`, which is not registered yet.
+- **Inc 7:** a write tool sets `retry` to its own `RetryContext`, so a defect escaping its handler is
+  mapped with it: `add_order_comment` gets `{ idempotent: false, verifyBeforeRetry }`. The write gate
+  goes into `createServer`, from `config.writeTools`.
+- **Inc 8:** replace the http exit in `index.ts` with the adapter. The logger already receives the
+  token as a secret in http mode; keep redaction at the sink rather than at each call site.
 
 ---
 
@@ -850,7 +947,10 @@ the first of the two kinds of truncation. `projection/` also gained `html-text.t
 - `npm run build && npx @modelcontextprotocol/inspector node dist/index.js` — manual tool calls
 - Gate check: run the inspector with `MAGENTO_MCP_WRITE_TOOLS` unset and confirm only five tools list
 - Config guards: starting with `MAGENTO_MODE=fixture` plus a `MAGENTO_BASE_URL` must exit non-zero;
-  starting with a misspelled write-tool name must exit non-zero
+  starting with a misspelled write-tool name must exit non-zero. Both are pinned by
+  `tests/process/startup.test.ts`, which builds `dist/` and launches it over stdio
+- Stdout: `tests/stdout-discipline.test.ts` fails on any `console` or `process.stdout` under `src/`,
+  and the process spec parses every line the server writes to stdout as JSON-RPC
 - Degradation: `get_product` answers with partial stock and a `notice` when the MSI endpoints fail
 - Secrets: `.env` is gitignored; a real token is supplied through the MCP client's `env` block, and
   no committed file in the repo contains a credential
@@ -866,5 +966,6 @@ the first of the two kinds of truncation. `projection/` also gained `html-text.t
 - Store config `cataloginventory/item_options/manage_stock` is not reachable via Open Source REST, so
   `MAGENTO_DEFAULT_MANAGE_STOCK` is the documented fallback. If your instance exposes it, increment 5
   should read it instead and drop the env var. **Answered 2026-09-26:** `stock_item.manage_stock`
-  already carries the effective value — see the increment 5 note.
+  already carries the effective value — see the increment 5 note. **Settled in increment 5:** the env
+  var is removed.
 - The order status enum matches stock Magento; installs with custom statuses will need it widened.

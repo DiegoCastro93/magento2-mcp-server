@@ -26,6 +26,7 @@ import {
     type ProductSearchParams,
     type SourceItemUpdate
 } from './client.js';
+import { hasOwnStock } from './product-types.js';
 import type {
     RawCustomer,
     RawOrder,
@@ -66,9 +67,6 @@ export interface FixtureClientOptions {
  */
 const DEFAULT_SOURCE_CODE = 'default';
 const DEFAULT_STOCK_ID = 1;
-
-/** Types with `isQty="true"` in `product_types.xml`: the only ones that have source items. */
-const SOURCE_ITEM_TYPES: ReadonlySet<string> = new Set(['simple', 'virtual', 'downloadable']);
 
 /**
  * Stock Magento's state → status assignments, from `module-sales`'
@@ -153,7 +151,7 @@ export class FixtureMagentoClient implements MagentoClient {
     async getSalableQuantity(sku: string, stockId: number): Promise<number | undefined> {
         const product = this.products.get(ci(sku));
         if (product === undefined) return undefined;
-        if (!SOURCE_ITEM_TYPES.has(product.type_id)) {
+        if (!hasOwnStock(product.type_id)) {
             throw new MagentoRequestError(400, { message: NO_SOURCE_ITEMS });
         }
         // No stock data at all reads as 0 (`GetProductSalableQty`).

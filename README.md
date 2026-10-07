@@ -3,8 +3,8 @@
 An MCP server that exposes a Magento 2 Open Source store — catalog, orders and customers — to LLM
 agents over stdio, with a strict separation between reading and writing.
 
-> **Status: in development.** The scaffold, configuration layer and CI are in place. The Magento
-> adapter and the tools themselves are being built increment by increment.
+> **Status: in development.** `get_product` runs end to end over stdio against the bundled fixtures.
+> The other tools, and the http adapter for a live Magento, are being built increment by increment.
 
 ## Why this exists
 
@@ -41,6 +41,16 @@ npm run build
 ```
 
 The server defaults to `MAGENTO_MODE=fixture`, so it runs with no configuration at all.
+
+### Try it
+
+```bash
+npm run inspector   # builds, then opens the MCP Inspector on dist/index.js
+```
+
+In fixture mode the server says so on stderr and serves the demo catalogue in `fixtures/`. Call
+`get_product` with `24-MB01` for a product with its full stock, or with `24-WG085_Group` to see how
+the answer explains a grouped product, which has no stock of its own.
 
 ## Configuration
 

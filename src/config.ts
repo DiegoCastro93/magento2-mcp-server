@@ -9,6 +9,8 @@
  * Two of those guards exist for the same reason: a misconfiguration must never
  * be indistinguishable from correct operation. See {@link loadConfig}.
  */
+import { join } from 'node:path';
+import { PACKAGE_ROOT } from './package-root.js';
 import { WRITE_TOOL_NAMES, isWriteToolName, type WriteToolName } from './tools/names.js';
 
 export const LOG_LEVELS = ['debug', 'info', 'warn', 'error'] as const;
@@ -19,11 +21,13 @@ interface BaseConfig {
     readonly sourceCode: string;
     /** MSI stock used for salable-quantity and is-salable lookups. */
     readonly stockId: number;
-    /** Fallback for products whose `use_config_manage_stock` is true. */
-    readonly defaultManageStock: boolean;
     /** Write tools permitted to register. Empty means a read-only server. */
     readonly writeTools: readonly WriteToolName[];
     readonly timeoutMs: number;
+    /**
+     * Absolute when unset: the package's own `fixtures/`. A value that is set
+     * is kept as given, so a relative one resolves against the cwd.
+     */
     readonly fixturesDir: string;
     readonly logLevel: LogLevel;
 }
@@ -55,14 +59,6 @@ function read(env: Env, key: string): string | undefined {
     if (raw === undefined) return undefined;
     const trimmed = raw.trim();
     return trimmed === '' ? undefined : trimmed;
-}
-
-function parseBoolean(value: string, key: string, problems: string[], fallback: boolean): boolean {
-    const normalised = value.toLowerCase();
-    if (['true', '1', 'yes'].includes(normalised)) return true;
-    if (['false', '0', 'no'].includes(normalised)) return false;
-    problems.push(`${key} must be one of true/false/1/0/yes/no, got "${value}".`);
-    return fallback;
 }
 
 function parseInteger(value: string, key: string, problems: string[], fallback: number): number {
@@ -152,12 +148,6 @@ export function loadConfig(env: Env): Config {
     const timeoutMs =
         timeoutRaw === undefined ? 10_000 : parseInteger(timeoutRaw, 'MAGENTO_TIMEOUT_MS', problems, 10_000);
 
-    const manageStockRaw = read(env, 'MAGENTO_DEFAULT_MANAGE_STOCK');
-    const defaultManageStock =
-        manageStockRaw === undefined
-            ? true
-            : parseBoolean(manageStockRaw, 'MAGENTO_DEFAULT_MANAGE_STOCK', problems, true);
-
     const logLevelRaw = read(env, 'LOG_LEVEL') ?? 'info';
     if (!(LOG_LEVELS as readonly string[]).includes(logLevelRaw)) {
         problems.push(`LOG_LEVEL must be one of ${LOG_LEVELS.join(', ')}, got "${logLevelRaw}".`);
@@ -173,10 +163,11 @@ export function loadConfig(env: Env): Config {
     const base: BaseConfig = {
         sourceCode: read(env, 'MAGENTO_SOURCE_CODE') ?? 'default',
         stockId,
-        defaultManageStock,
         writeTools,
         timeoutMs,
-        fixturesDir: read(env, 'MAGENTO_FIXTURES_DIR') ?? './fixtures',
+        // MCP clients launch the server from an arbitrary cwd, so the default
+        // cannot be a relative path.
+        fixturesDir: read(env, 'MAGENTO_FIXTURES_DIR') ?? join(PACKAGE_ROOT, 'fixtures'),
         logLevel
     };
 

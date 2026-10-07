@@ -2,8 +2,8 @@
  * The allowlists: one strict zod schema per projection.
  *
  * A field reaches the model only if it is named here. Each schema is the one
- * source for a projection's keys, for its value types (`z.infer`) and, from
- * increment 5, for the tool's `outputSchema`, so a field cannot be added in one
+ * source for a projection's keys, for its value types (`z.infer`) and for the
+ * tool's `outputSchema`, so a field cannot be added in one
  * of those places and forgotten in another, and cannot leak in through a
  * spread. Every object is strict: the JSON Schema the model reads says
  * `additionalProperties: false`, and the SDK's output validation refuses a
@@ -57,6 +57,34 @@ export const ProductDetailSchema = ProductSummarySchema.extend({
     countryOfManufacture: z.string().optional().describe('ISO 3166-1 alpha-2 code.'),
     createdAt: z.string(),
     updatedAt: z.string()
+});
+
+/**
+ * Stock at the configured source and stock. Every field but `sourceCode` is
+ * optional: each comes from its own upstream call, and one failing must not
+ * take the others with it. The tool's notice says why a field is missing, so
+ * an absent quantity is never read as zero.
+ */
+export const StockDetailSchema = z.strictObject({
+    sourceCode: z.string(),
+    sourceQuantity: z.number().optional().describe('On-hand quantity at sourceCode.'),
+    sourceStatus: z.enum(['in_stock', 'out_of_stock']).optional(),
+    salableQuantity: z
+        .number()
+        .optional()
+        .describe('What the configured stock can still sell: on-hand minus open order reservations, never below 0.'),
+    isSalable: z.boolean().optional(),
+    manageStock: z
+        .boolean()
+        .optional()
+        .describe('False means Magento does not track or enforce quantity for this product.')
+});
+
+/** `get_product`'s `outputSchema`. */
+export const GetProductOutputSchema = z.strictObject({
+    product: ProductDetailSchema,
+    stock: StockDetailSchema,
+    notice: z.string().optional()
 });
 
 export const AddressSchema = z.strictObject({
@@ -135,6 +163,8 @@ export const CustomerSchema = z.strictObject({
 
 export type ProductSummary = z.infer<typeof ProductSummarySchema>;
 export type ProductDetail = z.infer<typeof ProductDetailSchema>;
+export type StockDetail = z.infer<typeof StockDetailSchema>;
+export type GetProductOutput = z.infer<typeof GetProductOutputSchema>;
 export type Address = z.infer<typeof AddressSchema>;
 export type CustomerAddress = z.infer<typeof CustomerAddressSchema>;
 export type OrderSummary = z.infer<typeof OrderSummarySchema>;

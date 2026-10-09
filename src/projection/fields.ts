@@ -17,6 +17,7 @@
  * reach the model through `outputSchema`, and every word of them is paid for.
  */
 import * as z from 'zod';
+import { PaginationSchema } from '../shared/pagination.js';
 
 /** Per-field limits, in characters, for the free text that can run long. */
 export const TEXT_LIMITS = {
@@ -161,6 +162,35 @@ export const CustomerSchema = z.strictObject({
     addresses: z.array(CustomerAddressSchema)
 });
 
+/** `search_products`' `outputSchema`. */
+export const SearchProductsOutputSchema = z.strictObject({
+    products: z.array(ProductSummarySchema),
+    pagination: PaginationSchema,
+    notice: z.string().optional()
+});
+
+/** `search_orders`' `outputSchema`. */
+export const SearchOrdersOutputSchema = z.strictObject({
+    orders: z.array(OrderSummarySchema),
+    pagination: PaginationSchema,
+    notice: z.string().optional()
+});
+
+/** `get_order`'s `outputSchema`. */
+export const GetOrderOutputSchema = z.strictObject({
+    order: OrderDetailSchema,
+    notice: z.string().optional()
+});
+
+/**
+ * `get_customer`'s `outputSchema`. No `notice`: nothing in a customer is
+ * truncated or capped, and a field that is never set is still paid for in
+ * `tools/list`.
+ */
+export const GetCustomerOutputSchema = z.strictObject({
+    customer: CustomerSchema
+});
+
 export type ProductSummary = z.infer<typeof ProductSummarySchema>;
 export type ProductDetail = z.infer<typeof ProductDetailSchema>;
 export type StockDetail = z.infer<typeof StockDetailSchema>;
@@ -172,3 +202,7 @@ export type OrderItem = z.infer<typeof OrderItemSchema>;
 export type OrderComment = z.infer<typeof OrderCommentSchema>;
 export type OrderDetail = z.infer<typeof OrderDetailSchema>;
 export type Customer = z.infer<typeof CustomerSchema>;
+export type SearchProductsOutput = z.infer<typeof SearchProductsOutputSchema>;
+export type SearchOrdersOutput = z.infer<typeof SearchOrdersOutputSchema>;
+export type GetOrderOutput = z.infer<typeof GetOrderOutputSchema>;
+export type GetCustomerOutput = z.infer<typeof GetCustomerOutputSchema>;

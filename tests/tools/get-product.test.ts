@@ -7,7 +7,7 @@ import { GetProductOutputSchema, type GetProductOutput } from '../../src/project
 import type { ToolDeps } from '../../src/tools/definition.js';
 import { defineGetProduct } from '../../src/tools/read/get-product.js';
 import { wire } from '../projection/fixtures.js';
-import { failing, loadFixtureClient, memoryLogger, override } from './client-stubs.js';
+import { failing, loadFixtureClient, memoryLogger, override, refusalOf } from './client-stubs.js';
 
 /**
  * The ceiling for the largest fixture's whole answer, product and stock
@@ -51,13 +51,8 @@ async function answer(
 }
 
 /** The ToolError the handler throws for `sku`. */
-async function refusal(sku: string, client: MagentoClient): Promise<ToolError> {
-    const error: unknown = await tool(client).definition.handler({ sku }).then(
-        () => undefined,
-        (thrown: unknown) => thrown
-    );
-    expect(error).toBeInstanceOf(ToolError);
-    return error as ToolError;
+function refusal(sku: string, client: MagentoClient): Promise<ToolError> {
+    return refusalOf(tool(client).definition.handler({ sku }));
 }
 
 describe('get_product', () => {

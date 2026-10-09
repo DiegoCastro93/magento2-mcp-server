@@ -20,9 +20,9 @@ commits, README all in English).
 
 ---
 
-## Status — 2026-10-06
+## Status — 2026-10-08
 
-Increments 0 to 5 are done. 0 to 4 are committed and pushed, each with CI green:
+Increments 0 to 6 are done. 0 to 5 are committed and pushed, each with CI green:
 
 - `3999292` — scaffold, config guards, CI.
 - `4669022` — CI actions pinned to `@v5` (their own runtime was the deprecated Node 20; the project's
@@ -36,17 +36,37 @@ Increments 0 to 5 are done. 0 to 4 are committed and pushed, each with CI green:
 - `6a47ab5` — increment 4: the projection layer — strict allowlist schemas, projectors, HTML-to-text,
   truncation with notice collection, and the pagination envelope, resting on six owner decisions
   recorded under "Increment 4 — outcome".
-- Increment 5 — `get_product` end to end, the server with its tool wrapper, the stderr logger and
-  the stdio entrypoint, resting on four owner decisions recorded under "Increment 5 — outcome". Its
-  hash is added here with increment 6.
+- `1794bc8` — increment 5: `get_product` end to end, the server with its tool wrapper, the stderr
+  logger and the stdio entrypoint, resting on four owner decisions recorded under "Increment 5 —
+  outcome".
+- Increment 6 — the remaining read tools, `search_products`, `search_orders`, `get_order` and
+  `get_customer`, resting on two owner decisions recorded under "Increment 6 — outcome". Its hash is
+  added here with increment 7.
 
-**Next: increment 6 — the remaining read tools: `search_products`, `search_orders`, `get_order` and
-`get_customer`. Not started.** Its inputs:
+**Next: increment 7 — the write tools and their gate: `update_product_stock`, `add_order_comment`,
+and `MAGENTO_MCP_WRITE_TOOLS` applied in `createServer`. Not started; nothing of it is in the tree.**
+Before any code, the owner settles one open question, offered with options:
 
-- their contracts under "Tool contracts";
-- the increment 6 notes under "Increment 2 — outcome" (the `priceMin`/`priceMax` refine), "Increment
-  4 — outcome" (`paginate`, `paginationNotice`, the customer group sentence) and "Increment 5 —
-  outcome" (one `defineX(deps)` per tool, and what the server's wrapper already does for it).
+1. **Whether `add_order_comment` keeps `status`.** 2.4.9 applies it to the order, not only to the
+   comment: `OrderService::addComment` sets it, and refuses with a 400 a status outside the order's
+   current state. On a stock install, that lets the tool move a `processing` order to `fraud`.
+   Keeping it also bears on `destructiveHint: false`, which the contract justifies by the tool being
+   purely additive. See the increment 2 note.
+
+Its other inputs:
+
+- the two write contracts under "Tool contracts", and "Write gate" under "Locked decisions";
+- the increment 7 notes under:
+  - "Increment 3 — outcome": `add_order_comment` passes `idempotent: false` with a
+    `verifyBeforeRetry` pointing at `get_order`; `update_product_stock` passes `idempotent: true`,
+    and its SKU pre-check is what proves the token before the write;
+  - "Increment 5 — outcome": a write tool sets `retry` to its own `RetryContext`, and the gate goes
+    into `createServer`, from `config.writeTools`.
+- what already exists:
+  - the port's `updateSourceItem`, `addOrderComment` and `findOrderByIncrementId`, all implemented
+    by the fixture adapter, whose writes mutate memory only;
+  - `WRITE_TOOL_NAMES`, and the startup validation of the allowlist in `config.ts`;
+  - `get_order` and its comments, which the verify suggestion points the agent at.
 
 This is the versioned copy of the plan. The working copy lives outside the repository; keep the two in
 step whenever either changes, with one deliberate difference: this copy's "Environment blockers"
@@ -139,6 +159,7 @@ magento2-mcp-server/
 │   │   ├── http-client.ts          # fetch + bearer token + timeout + response→error mapping
 │   │   ├── fixture-client.ts       # serves canned JSON from fixtures/
 │   │   ├── product-types.ts        # which product types carry stock of their own
+│   │   ├── order-statuses.ts       # the order statuses of a stock install
 │   │   ├── search-criteria.ts      # searchCriteria[...] query builder
 │   │   └── raw-types.ts            # partial types for the raw Magento payloads we touch
 │   ├── tools/
@@ -231,9 +252,11 @@ z.object({
   priceMax:   z.number().nonnegative().optional(),
   page:       z.number().int().min(1).default(1),
   pageSize:   z.number().int().min(1).max(50).default(20),
-}).refine(v => !(v.priceMin && v.priceMax) || v.priceMin <= v.priceMax,
-          { message: 'priceMin must be less than or equal to priceMax.' })
+})
+// handler: priceMin > priceMax, both present (!== undefined) → INVALID_INPUT
 ```
+Cross-field rules like this one are checked in the handler, not with a `.refine`, and stated in the
+field's description; see "Increment 6 — outcome".
 Output: `{ products: ProductSummary[], pagination, notice? }`
 Upstream: `GET /V1/products` with filter groups (groups AND together, filters within a group OR),
 `name`/`sku` via `condition_type=like` wrapped in `%`, price via `gteq`/`lteq`, sort `created_at DESC`.
@@ -290,14 +313,16 @@ stock: { sourceCode, sourceQuantity?, sourceStatus?, salableQuantity?, isSalable
 
 ```ts
 z.object({
-  status:      z.enum(['pending','processing','complete','closed','canceled',
-                       'holded','payment_review','fraud']).optional(),
-  email:       z.string().email().optional(),
+  status:      z.string().min(1).optional(),  // a code; described with the 12 stock statuses
+  email:       z.email().optional(),
   createdFrom: z.iso.date().optional(),   // YYYY-MM-DD
   createdTo:   z.iso.date().optional(),
   page, pageSize,
-}).refine(createdFrom <= createdTo)
+})
+// handler: createdFrom > createdTo → INVALID_INPUT
 ```
+`status` admits a store's own statuses. When one outside the stock list matches nothing, `notice`
+says so, so that an invented status such as `shipped` does not read as "no orders".
 Output: `{ orders: OrderSummary[], pagination, notice? }`
 Upstream: `GET /V1/orders`, sort `created_at DESC`. Date filters use `from`/`to` condition types.
 
@@ -321,9 +346,10 @@ resolution is shared with `add_order_comment`, so it lives in one helper
 
 ```ts
 z.object({
-  email:      z.string().email().optional(),
+  email:      z.email().optional(),
   customerId: z.number().int().positive().optional(),
-}).refine(exactly one present, { message: 'Provide exactly one of email or customerId.' })
+})
+// handler: neither or both → INVALID_INPUT, 'Provide exactly one of email or customerId.'
 ```
 Upstream: `GET /V1/customers/{id}` or `GET /V1/customers/search` filtered on `email`.
 
@@ -588,9 +614,10 @@ Each increment ends green (`npm run typecheck && npm test`) and gets its own com
    call 1 failing still yields `NOT_FOUND`; manual smoke with
    `npx @modelcontextprotocol/inspector node dist/index.js`.
    See "Increment 5 — outcome" below.
-6. **← NEXT. Remaining read tools.** `search_products`, `search_orders`, `get_order`, `get_customer`.
+6. **Done. Remaining read tools.** `search_products`, `search_orders`, `get_order`, `get_customer`.
    **Verify**: per-tool specs incl. NOT_FOUND paths and pagination notices.
-7. **Write tools + the gate.** Both write tools, allowlist parsing, annotations.
+   See "Increment 6 — outcome" below.
+7. **← NEXT. Write tools + the gate.** Both write tools, allowlist parsing, annotations.
    **Verify**: `tools/list` omits both when the allowlist is empty; lists exactly one when only one is
    named; annotations assert `destructiveHint: true` on stock and `false` on the comment.
 8. **HTTP client + docs.** `http-client.ts` against a real instance, README (setup, integration-token
@@ -724,7 +751,8 @@ scenario *values* stay hand-set, since sample data ships one customer and two or
   against the package root, not the cwd, since MCP clients launch servers from an arbitrary cwd.
   **Resolved in increment 5:** the owner dropped both; see "Increment 5 — outcome".
 - **Inc 6:** the `priceMin`/`priceMax` refine tests truthiness, so `{ priceMin: 5, priceMax: 0 }`
-  passes. Use `!== undefined`.
+  passes. Use `!== undefined`. **Done in increment 6**, as a handler check with a test for that very
+  input.
 - **Inc 7:** the `add_order_comment` contract's "does not transition the order" is false for 2.4.9.
   Rewrite it, and decide whether `status` stays, given that on a stock install it can flag an order as
   `fraud`.
@@ -860,6 +888,8 @@ the first of the two kinds of truncation. `projection/` also gained `html-text.t
   **Done in increment 5.**
 - **Inc 6:** the search tools use `paginate` and `paginationNotice` and add the sentence to their
   `Notices`. `get_customer`'s description says the group is a numeric ID whose name is not resolved.
+  **Done in increment 6.** The search tools need no `Notices`: each result carries one sentence at
+  most.
 - **Inc 8:** no new ACL resource is needed, so the README's list stays as it is.
 
 ---
@@ -929,12 +959,66 @@ against a ceiling of 2,100.
 
 - **Inc 6:** each tool is a `defineX(deps)` in `tools/read/`, listed in `readTools`, and the wrapper
   already handles errors, logging and output checking. Until then, `get_product`'s description and
-  its `NOT_FOUND` suggestion name `search_products`, which is not registered yet.
+  its `NOT_FOUND` suggestion name `search_products`, which is not registered yet. **Done in increment
+  6.**
 - **Inc 7:** a write tool sets `retry` to its own `RetryContext`, so a defect escaping its handler is
   mapped with it: `add_order_comment` gets `{ idempotent: false, verifyBeforeRetry }`. The write gate
   goes into `createServer`, from `config.writeTools`.
 - **Inc 8:** replace the http exit in `index.ts` with the adapter. The logger already receives the
   token as a secret in http mode; keep redaction at the sink rather than at each call site.
+
+---
+
+## Increment 6 — outcome (2026-10-08)
+
+Done. Before any code, the owner took two decisions, each offered with options checked against SDK
+2.0.0, zod 4.6.5 and the 2.4.9 sandbox source:
+
+1. **Cross-field rules are checked in the handler**, over a zod `.refine`. A refine is absent from the
+   JSON Schema the model reads, and when it fails the SDK answers with its own text: `isError`, but no
+   `structuredContent.error`, no suggestion, and nothing logged. The handler throws
+   `ToolError('INVALID_INPUT')` instead, so the agent gets the envelope and the operator a log line.
+   Each rule is also stated in its field's description, the one place the model can read it. The
+   cost, accepted: input errors arrive in two shapes, since per-field ones — a malformed email, a
+   `pageSize` over 50 — stay with the SDK. Sending those through the envelope too was not offered:
+   it would mean overriding `McpServer.validateToolInput`, which the SDK declares private.
+2. **`search_orders.status` is a described string, with a notice**, over an enum of the twelve stock
+   statuses and over a bare string. An enum would refuse a store's own statuses. A bare string
+   answers an invented status, such as `shipped`, with an empty page that reads as "no such orders".
+   So when a status outside the stock list matches nothing, `notice` says so, worded for both
+   readings: a custom status that no order holds yet looks the same from here.
+
+Read in the sandbox and the installed packages:
+
+- The twelve stock statuses are nine from `module-sales` (`InstallOrderStatusesAndInitialSalesConfig`)
+  and three from `module-paypal` (`AddPaypalOrderStatuses`). They live in `magento/order-statuses.ts`.
+- zod 4.6.5: `.refine` on a `z.object` still returns a `ZodObject`, so `ToolDefinition`'s types did
+  not force the choice. `z.iso.date()` refuses an impossible date such as `2026-02-30`, so the guard
+  in `startOfDay` is never reached through a tool.
+- A tool's input schema is one JSON Schema object, so "exactly one of email or customerId" cannot be
+  a union of two shapes either.
+
+What landed, beyond the four tools:
+
+- `shared/pagination.ts` gained `PAGING_INPUT`, the paging shape both search tools spread into their
+  input, and `matchSummary`, their text line.
+- `tools/definition.ts` gained `answerText`, the summary line followed by the notice, which every
+  tool now uses.
+- `fields.ts` holds the four new output schemas. `get_customer`'s has no `notice`: nothing in a
+  customer is truncated or capped, and a field that is never set is still paid for in `tools/list`.
+- The server spec pins a cross-field failure arriving as the envelope, logged at `INFO`, and the rule
+  advertised in its field description in `tools/list`.
+
+Token budget, measured: a full page of 50 `search_products` results, envelope and notice included,
+takes 5,334 bytes, against a ceiling of 5,900. `tools/list` for the five read tools takes 14,343
+bytes, most of it output schemas; nothing guards that figure yet.
+
+### Notes for later increments
+
+- **Inc 7:** the verify suggestion for `add_order_comment` can now point at `get_order`, which is
+  registered.
+- **Inc 8:** confirm against the real instance that `eq` on `status` is case-insensitive, as it is on
+  `customer_email`. The fixture adapter and `isStockOrderStatus` both assume it.
 
 ---
 
@@ -969,3 +1053,6 @@ against a ceiling of 2,100.
   already carries the effective value — see the increment 5 note. **Settled in increment 5:** the env
   var is removed.
 - The order status enum matches stock Magento; installs with custom statuses will need it widened.
+  **Contradicted 2026-10-06:** the enum omits `pending_payment`, and a stock 2.4.9 install holds
+  three PayPal statuses besides. **Settled in increment 6:** `status` is a string described with the
+  twelve stock statuses, which admits custom ones; see "Increment 6 — outcome".

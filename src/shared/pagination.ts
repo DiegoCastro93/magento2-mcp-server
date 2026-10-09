@@ -5,6 +5,15 @@
  */
 import * as z from 'zod';
 
+/**
+ * The paging every search tool accepts. The cap on `pageSize` is part of the
+ * schema, so the model reads the bound instead of being silently clamped to it.
+ */
+export const PAGING_INPUT = {
+    page: z.number().int().min(1).default(1),
+    pageSize: z.number().int().min(1).max(50).default(20)
+};
+
 export const PaginationSchema = z.strictObject({
     page: z.number().int(),
     pageSize: z.number().int(),
@@ -41,8 +50,8 @@ export function paginationNotice(pagination: Pagination, noun: ListedNoun): stri
 
     if (totalCount === 0) return undefined;
     if (page > totalPages) {
-        const matches = totalCount === 1 ? `1 ${SINGULAR[noun]} matches` : `${totalCount} ${noun} match`;
-        return `Page ${page} is past the end: ${matches}, in ${totalPages} ${totalPages === 1 ? 'page' : 'pages'}.`;
+        const pages = totalPages === 1 ? '1 page' : `${totalPages} pages`;
+        return `Page ${page} is past the end: ${matches(totalCount, noun)}, in ${pages}.`;
     }
     if (!hasMore) return undefined;
 
@@ -50,4 +59,13 @@ export function paginationNotice(pagination: Pagination, noun: ListedNoun): stri
         `Showing ${pageSize} of ${totalCount} ${noun} (page ${page} of ${totalPages}). ` +
         `Narrow the filters or request page ${page + 1}.`
     );
+}
+
+/** A search tool's one-line summary: "No products match.", "1 product matches." or "6 products match." */
+export function matchSummary(totalCount: number, noun: ListedNoun): string {
+    return totalCount === 0 ? `No ${noun} match.` : `${matches(totalCount, noun)}.`;
+}
+
+function matches(totalCount: number, noun: ListedNoun): string {
+    return totalCount === 1 ? `1 ${SINGULAR[noun]} matches` : `${totalCount} ${noun} match`;
 }

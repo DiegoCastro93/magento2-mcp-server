@@ -22,7 +22,7 @@ import { projectProductDetail } from '../../projection/product.js';
 import { projectStock, type Outcome } from '../../projection/stock.js';
 import { Notices } from '../../projection/truncate.js';
 import { logToolError } from '../../shared/logger.js';
-import { READ_ANNOTATIONS, READ_RETRY, type ToolDefinition, type ToolDeps } from '../definition.js';
+import { answerText, READ_ANNOTATIONS, READ_RETRY, type ToolDefinition, type ToolDeps } from '../definition.js';
 
 const DESCRIPTION =
     'Get detail and current inventory for exactly one product, by SKU. Returns an allowlisted subset of the ' +
@@ -95,8 +95,7 @@ export function defineGetProduct(
             const notice = notices.toNotice();
 
             const structuredContent: GetProductOutput = { product: detail, stock, notice };
-            const line = summarize(detail, stock);
-            return { structuredContent, text: notice === undefined ? line : `${line} ${notice}` };
+            return { structuredContent, text: answerText(summarize(detail, stock), notice) };
         }
     };
 }

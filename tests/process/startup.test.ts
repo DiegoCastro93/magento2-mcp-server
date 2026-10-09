@@ -102,7 +102,7 @@ function run(env: NodeJS.ProcessEnv): Promise<Exit> {
 }
 
 describe('the built server', () => {
-    it('serves get_product over stdio from any cwd, with nothing but JSON-RPC on stdout', async () => {
+    it('serves the read tools over stdio from any cwd, with nothing but JSON-RPC on stdout', async () => {
         const transport = new RecordingTransport(environment());
         const client = new Client({ name: 'process-spec', version: '0.0.0' });
 
@@ -111,7 +111,13 @@ describe('the built server', () => {
         const result = await client.callTool({ name: 'get_product', arguments: { sku: '24-MB01' } });
         await client.close();
 
-        expect(tools.map((t) => t.name)).toEqual(['get_product']);
+        expect(tools.map((t) => t.name)).toEqual([
+            'search_products',
+            'get_product',
+            'search_orders',
+            'get_order',
+            'get_customer'
+        ]);
         expect(result.structuredContent).toMatchObject({ stock: { salableQuantity: 97, sourceQuantity: 100 } });
 
         expect(transport.stdoutLines.length).toBeGreaterThan(0);

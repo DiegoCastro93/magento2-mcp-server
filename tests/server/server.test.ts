@@ -11,6 +11,7 @@ import type { MagentoClient } from '../../src/magento/client.js';
 import type { FixtureMagentoClient } from '../../src/magento/fixture-client.js';
 import { addTool, createServer } from '../../src/server.js';
 import { READ_ANNOTATIONS, READ_RETRY, type ToolDefinition } from '../../src/tools/definition.js';
+import { READ_TOOL_NAMES } from '../../src/tools/names.js';
 import { loadFixtureClient, memoryLogger, override } from '../tools/client-stubs.js';
 
 const SERVER_INFO = { name: 'magento2-mcp-server', version: '0.0.0-test' };
@@ -50,15 +51,15 @@ function textOf(result: Awaited<ReturnType<Client['callTool']>>): string {
 }
 
 describe('createServer', () => {
-    it('lists get_product, with all four hints and a closed output schema', async () => {
+    it('lists the five read tools, each with all four hints and a closed output schema', async () => {
         const { tools } = await (await serve().connected).listTools();
 
-        expect(tools.map((t) => t.name)).toEqual(['get_product']);
-        const [tool] = tools;
-        expect(tool?.annotations).toMatchObject(READ_ANNOTATIONS);
-        expect(tool?.outputSchema).toMatchObject({
-            type: 'object',
-            additionalProperties: false,
+        expect(tools.map((t) => t.name)).toEqual([...READ_TOOL_NAMES]);
+        for (const tool of tools) {
+            expect(tool.annotations, tool.name).toMatchObject(READ_ANNOTATIONS);
+            expect(tool.outputSchema, tool.name).toMatchObject({ type: 'object', additionalProperties: false });
+        }
+        expect(tools.find((t) => t.name === 'get_product')?.outputSchema).toMatchObject({
             properties: { stock: { additionalProperties: false } }
         });
     });
@@ -105,6 +106,36 @@ describe('createServer', () => {
         expect(log()).toContain('ERROR get_product: INTERNAL_ERROR');
         expect(log()).toContain("TypeError: Cannot read properties of undefined (reading 'sku')");
         expect(log()).toMatch(/\n {4}\s*at /);
+    });
+
+    it('returns a broken cross-field rule as the INVALID_INPUT envelope, and logs it', async () => {
+        // The handler checks it, since a zod refine would fail outside the envelope.
+        const { connected, log } = serve();
+
+        const result = await (await connected).callTool({
+            name: 'search_products',
+            arguments: { priceMin: 5, priceMax: 0 }
+        });
+
+        expect(result.isError).toBe(true);
+        expect(result.structuredContent).toStrictEqual({
+            error: {
+                code: 'INVALID_INPUT',
+                message: 'priceMin (5) is greater than priceMax (0).',
+                retryable: false,
+                suggestion: 'Swap the two values, or drop one of them to leave that end of the range open.'
+            }
+        });
+        expect(log()).toContain('INFO search_products: INVALID_INPUT: priceMin (5) is greater than priceMax (0).');
+    });
+
+    it('advertises a cross-field rule in the field description, since the JSON Schema cannot carry it', async () => {
+        const { tools } = await (await serve().connected).listTools();
+
+        const search = tools.find((t) => t.name === 'search_products');
+        expect(search?.inputSchema).toMatchObject({
+            properties: { priceMin: { description: expect.stringContaining('Must not be greater than priceMax.') } }
+        });
     });
 
     it('leaves input that violates the schema to the SDK, outside the envelope', async () => {

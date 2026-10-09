@@ -3,6 +3,8 @@
  * fail exactly the upstream call it is about and leave the rest answering.
  */
 import { fileURLToPath } from 'node:url';
+import { expect } from 'vitest';
+import { ToolError } from '../../src/errors/tool-error.js';
 import type { MagentoClient } from '../../src/magento/client.js';
 import { FixtureMagentoClient } from '../../src/magento/fixture-client.js';
 import { createLogger, type Logger } from '../../src/shared/logger.js';
@@ -34,4 +36,14 @@ export function memoryLogger(): { logger: Logger; output: () => string } {
     const written: string[] = [];
     const logger = createLogger({ level: 'debug', write: (text) => written.push(text) });
     return { logger, output: () => written.join('') };
+}
+
+/** The ToolError a handler call rejects with. Fails the spec if it answers, or throws anything else. */
+export async function refusalOf(call: Promise<unknown>): Promise<ToolError> {
+    const error: unknown = await call.then(
+        () => undefined,
+        (thrown: unknown) => thrown
+    );
+    expect(error).toBeInstanceOf(ToolError);
+    return error as ToolError;
 }

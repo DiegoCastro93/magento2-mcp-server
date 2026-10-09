@@ -46,6 +46,11 @@ export interface ToolAnswer<T> {
     readonly text: string;
 }
 
+/** A {@link ToolAnswer}'s text: the summary line, then the notice when there is one. */
+export function answerText(line: string, notice: string | undefined): string {
+    return notice === undefined ? line : `${line} ${notice}`;
+}
+
 /** What every tool is built from. */
 export interface ToolDeps {
     readonly client: MagentoClient;

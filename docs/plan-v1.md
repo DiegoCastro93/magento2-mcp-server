@@ -22,7 +22,7 @@ commits, README all in English).
 
 ## Status — 2026-10-08
 
-Increments 0 to 6 are done. 0 to 5 are committed and pushed, each with CI green:
+Increments 0 to 7 are done. 0 to 6 are committed and pushed, each with CI green:
 
 - `3999292` — scaffold, config guards, CI.
 - `4669022` — CI actions pinned to `@v5` (their own runtime was the deprecated Node 20; the project's
@@ -39,34 +39,20 @@ Increments 0 to 6 are done. 0 to 5 are committed and pushed, each with CI green:
 - `1794bc8` — increment 5: `get_product` end to end, the server with its tool wrapper, the stderr
   logger and the stdio entrypoint, resting on four owner decisions recorded under "Increment 5 —
   outcome".
-- Increment 6 — the remaining read tools, `search_products`, `search_orders`, `get_order` and
-  `get_customer`, resting on two owner decisions recorded under "Increment 6 — outcome". Its hash is
-  added here with increment 7.
+- `a65d1f7` — increment 6: the remaining read tools, `search_products`, `search_orders`, `get_order`
+  and `get_customer`, resting on two owner decisions recorded under "Increment 6 — outcome".
+- Increment 7 — the write tools, `update_product_stock` and `add_order_comment`, and the write gate
+  in `createServer`, resting on three owner decisions recorded under "Increment 7 — outcome". Its hash
+  is added here with increment 8.
 
-**Next: increment 7 — the write tools and their gate: `update_product_stock`, `add_order_comment`,
-and `MAGENTO_MCP_WRITE_TOOLS` applied in `createServer`. Not started; nothing of it is in the tree.**
-Before any code, the owner settles one open question, offered with options:
+**Next: increment 8 — the http adapter and the docs. Not started.** Before any code, the owner
+settles one open question, offered with options:
 
-1. **Whether `add_order_comment` keeps `status`.** 2.4.9 applies it to the order, not only to the
-   comment: `OrderService::addComment` sets it, and refuses with a 400 a status outside the order's
-   current state. On a stock install, that lets the tool move a `processing` order to `fraud`.
-   Keeping it also bears on `destructiveHint: false`, which the contract justifies by the tool being
-   purely additive. See the increment 2 note.
+1. **A wrong `MAGENTO_BASE_URL` path.** It makes every lookup a 404, which the adapter reads as "does
+   not exist", so a misconfiguration looks like an empty store. See the increment 3 note.
 
-Its other inputs:
-
-- the two write contracts under "Tool contracts", and "Write gate" under "Locked decisions";
-- the increment 7 notes under:
-  - "Increment 3 — outcome": `add_order_comment` passes `idempotent: false` with a
-    `verifyBeforeRetry` pointing at `get_order`; `update_product_stock` passes `idempotent: true`,
-    and its SKU pre-check is what proves the token before the write;
-  - "Increment 5 — outcome": a write tool sets `retry` to its own `RetryContext`, and the gate goes
-    into `createServer`, from `config.writeTools`.
-- what already exists:
-  - the port's `updateSourceItem`, `addOrderComment` and `findOrderByIncrementId`, all implemented
-    by the fixture adapter, whose writes mutate memory only;
-  - `WRITE_TOOL_NAMES`, and the startup validation of the allowlist in `config.ts`;
-  - `get_order` and its comments, which the verify suggestion points the agent at.
+Its other inputs are the increment 8 notes under each "outcome" section below. "Increment 7 —
+outcome" names the write ACLs for the README, and the status the adapter must never send.
 
 This is the versioned copy of the plan. The working copy lives outside the repository; keep the two in
 step whenever either changes, with one deliberate difference: this copy's "Environment blockers"
@@ -200,7 +186,7 @@ magento2-mcp-server/
 │   ├── magento/                    # search-criteria + http-client (undici MockAgent)
 │   ├── errors/                     # upstream → envelope mapping
 │   ├── shared/                     # pagination, logger
-│   ├── server/                     # tools/list, the wrapper, the envelope; gating from increment 7
+│   ├── server/                     # tools/list, the wrapper, the envelope, the write gate
 │   ├── process/                    # the built server, launched over stdio
 │   └── stdout-discipline.test.ts   # no console or process.stdout under src/
 ├── .github/
@@ -360,44 +346,58 @@ distinguishes overwrites from additions:
 
 **`update_product_stock`** — `readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true`
 
-Destructive because it overwrites a value that cannot be recovered through this server; idempotent
-because it sets an absolute quantity, so repeating the same call is a no-op.
+Destructive because it overwrites a value rather than adding one; idempotent because it sets an
+absolute quantity, so repeating the same call is a no-op.
 
 > Set the on-hand quantity for one SKU at the configured inventory source. This overwrites the
-> current quantity with an absolute value — it is not a delta, and the previous quantity cannot be
-> recovered through this server. Salable quantity may differ from the value you set, because Magento
-> subtracts open order reservations. Requires human approval.
+> current quantity with an absolute value — it is not a delta. The answer reports the previous
+> quantity; nothing else keeps it. Only simple, virtual and downloadable products hold stock of their
+> own, and only at a source they are already assigned to; anything else is refused. Salable quantity
+> may differ from the value you set, because Magento subtracts open order reservations: call
+> get_product to see it.
 
 ```ts
 z.object({
   sku:      z.string().min(1),
-  quantity: z.number().min(0),
-  status:   z.enum(['in_stock','out_of_stock']).optional(),  // defaults from quantity
+  quantity: z.number().min(0),                                // absolute, not a delta
+  status:   z.enum(['in_stock','out_of_stock']).optional(),  // defaults from quantity: in_stock above 0
 })
 ```
+Output: `{ sku, sourceCode, previous: { quantity, status }, current: { quantity, status } }`
 Upstream: `POST /V1/inventory/source-items` with
 `{ sourceItems: [{ sku, source_code: MAGENTO_SOURCE_CODE, quantity, status }] }`.
-That endpoint upserts and does not reliably 404 on an unknown SKU, so the handler **verifies the SKU
-exists first** (`GET /V1/products/{sku}`) to produce a clean `NOT_FOUND` instead of silently creating
-a source item for a typo. Response echoes previous and new quantity.
+That endpoint upserts, and its validators never check that the product exists or what its type is
+(`SourceItemsSaveHandler`). So the handler first reads the product (`GET /V1/products/{sku}`)
+and the source item, concurrently, and refuses before writing:
+- an unknown SKU → `NOT_FOUND`, instead of silently creating a source item for a typo;
+- a type without stock of its own (grouped, configurable, bundle) → `INVALID_INPUT`;
+- a product with no row at the configured source → `NOT_FOUND`: assigning a product to a source is
+  source selection, out of scope for v1.
+
+The write uses the SKU and source code as Magento stores them, never the input's casing, and the
+answer reports the previous quantity and status.
 
 **`add_order_comment`** — `readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true`
 
 Additive, not destructive; *not* idempotent, since calling it twice appends two comments.
 
-> Append a comment to an order's status history. This is additive and cannot be undone through this
-> server. Set notifyCustomer only when the shopper should receive an email — that sends real mail to
-> a real person. Set visibleOnFront to expose the comment in the customer's account area.
+> Append a comment to an order's status history, by its increment ID — the customer-facing number
+> such as 000000123. The order itself is not changed: the comment records its current status. This
+> cannot be undone through this server, and calling it twice adds two comments. Set notifyCustomer
+> only when the shopper should receive an email — that sends real mail to a real person. Set
+> visibleOnFront to expose the comment in the customer's account area.
 
 ```ts
 z.object({
   incrementId:    z.string().min(1),
   comment:        z.string().min(1).max(2000),
-  status:         z.string().optional(),      // 2.4.9 applies it to the order: see the increment 7 note
   notifyCustomer: z.boolean().default(false),
   visibleOnFront: z.boolean().default(false),
 })
 ```
+No `status`: 2.4.9 applies a comment's status to the order; see "Increment 7 — outcome".
+Output: `{ incrementId, status, notifyCustomer, visibleOnFront }` — the order's status, unchanged, and
+the email as requested, not as sent.
 Upstream: resolve increment ID → entity ID, then `POST /V1/orders/{entityId}/comments`.
 
 ---
@@ -481,7 +481,7 @@ this invocation, and whether the operation is idempotent.
 | Code | Trigger | Retryable | Suggestion given to the agent |
 |---|---|---|---|
 | `NOT_FOUND` | 404, or empty search for a by-ID lookup | no | Entity-specific, from the tool: "No product with SKU 'X'. Use search_products to find the correct SKU." A 404 without Magento's own body points at `MAGENTO_BASE_URL`. |
-| `INVALID_INPUT` | 400, bad filter combination | no | Surfaces Magento's own message, with `%1` and `%name` placeholders interpolated |
+| `INVALID_INPUT` | 400, bad filter combination | no | Surfaces Magento's own message, with `%1` and `%name` placeholders interpolated. For a non-idempotent call, also the verify sentence² |
 | `AUTH_FAILED` | 401 while the token is unproven | no | Names both causes — an invalid, expired or revoked token, or a missing ACL resource — and the resource from `%resources`. A human operator must check both. |
 | `PERMISSION_DENIED` | 401 after another call in the same invocation succeeded; 403 | no | "The integration lacks access to {resource}"; other tools may still work. A 403 comes from a web server, WAF or IP allowlist: Magento's REST API never sends one. |
 | `RATE_LIMITED` | 429 | yes | Honours `Retry-After` when present — a proxy's, since Magento's own 429 carries none |
@@ -492,6 +492,7 @@ this invocation, and whether the operation is idempotent.
 
 ¹ Not for a non-idempotent call whose outcome is uncertain: see "Writes that may already have been
 applied" below.
+² A 400 does not prove that nothing was applied; see the same section.
 
 **Why a 401 needs the context.** Magento 2.4.9 answers an unusable token and a valid token lacking the
 ACL resource with the same 401 and a byte-identical body: `TokenUserContext::processRequest` falls back
@@ -504,13 +505,15 @@ single-call tool keeps the honest two-cause `AUTH_FAILED`. The difference matter
 to the operator: a dead token means every tool will fail, a missing resource means only this one will.
 
 **Writes that may already have been applied.** `OrderService::addComment` saves the order before it
-sends the customer email, so a timeout or a 5xx does not mean the comment was lost. For a
+sends the customer email, so a timeout, a 5xx or a 400 does not mean the comment was lost. For a
 non-idempotent call, every failure with an uncertain outcome — timeout, interrupted connection, any
 5xx, a defect — is `retryable: false`, and the suggestion carries the tool's own way to verify ("Check
 the order's comments with get_order before retrying."). The context type makes that sentence
-mandatory for a non-idempotent caller. Failures that certainly did not apply the call keep their usual
-`retryable`: a request that never left, a 400/401/403/404, and a 429, since Magento's backpressure
-check runs before the service.
+mandatory for a non-idempotent caller. A 400 gets the same sentence, and stays `retryable: false` as
+always: Magento answers every `LocalizedException` with a 400 wherever the service throws it, and a
+failed comment email is one, thrown after the save (see "Increment 7 — outcome"). Failures that
+certainly did not apply the call keep their usual `retryable` and suggestion: a request that never
+left, a 401/403/404, and a 429, since Magento's backpressure check runs before the service.
 
 Hard rules, each with a test:
 - **No stack traces, no raw HTML error pages, no raw Magento bodies** in the result. The agent sees
@@ -617,10 +620,11 @@ Each increment ends green (`npm run typecheck && npm test`) and gets its own com
 6. **Done. Remaining read tools.** `search_products`, `search_orders`, `get_order`, `get_customer`.
    **Verify**: per-tool specs incl. NOT_FOUND paths and pagination notices.
    See "Increment 6 — outcome" below.
-7. **← NEXT. Write tools + the gate.** Both write tools, allowlist parsing, annotations.
+7. **Done. Write tools + the gate.** Both write tools, allowlist parsing, annotations.
    **Verify**: `tools/list` omits both when the allowlist is empty; lists exactly one when only one is
    named; annotations assert `destructiveHint: true` on stock and `false` on the comment.
-8. **HTTP client + docs.** `http-client.ts` against a real instance, README (setup, integration-token
+   See "Increment 7 — outcome" below.
+8. **← NEXT. HTTP client + docs.** `http-client.ts` against a real instance, README (setup, integration-token
    ACLs, the write-gate rationale, the fixture story, the `openWorldHint` judgment call).
    **Verify**: `undici MockAgent` tests for status mapping; manual run against a real Magento.
 
@@ -722,7 +726,8 @@ scenario *values* stay hand-set, since sample data ships one customer and two or
   through the reservation-aware stock status, and the legacy `stock_item` is synced (forced out of
   stock at quantity 0).
 - `addOrderComment` follows `OrderService::addComment`: a status outside the order's current state is
-  a 400, a valid one **is applied to the order**, and the entry is prepended.
+  a 400, a valid one **is applied to the order**, and the entry is prepended. (The status left the
+  port in increment 7; see "Increment 7 — outcome".)
 - Error bodies are `{message, parameters?}`, with positional (`%1`) or named (`%resources`)
   placeholders. Developer mode adds a server-side `trace`.
 - Magento sends `null` when a getter is declared non-nullable and omits the field otherwise, so an
@@ -755,7 +760,7 @@ scenario *values* stay hand-set, since sample data ships one customer and two or
   input.
 - **Inc 7:** the `add_order_comment` contract's "does not transition the order" is false for 2.4.9.
   Rewrite it, and decide whether `status` stays, given that on a stock install it can flag an order as
-  `fraud`.
+  `fraud`. **Resolved in increment 7:** the owner dropped `status`; see "Increment 7 — outcome".
 - **Inc 8:** the README documents `oauth/consumer/enable_integration_as_bearer=1` and the ACL list,
   naming `Magento_CatalogInventory::cataloginventory` (for `stock_item`) next to its near-namesake
   `Magento_Catalog::catalog_inventory`. The http adapter maps a lookup 404 to `undefined` and any other
@@ -804,7 +809,7 @@ Read in the source rather than recalled:
   token redacted — needs its own no-token test. **Done in increment 5.**
 - **Inc 7:** `add_order_comment` passes `idempotent: false` with a `verifyBeforeRetry` pointing at
   `get_order`; `update_product_stock` passes `idempotent: true`, since it sets an absolute value.
-  Its SKU pre-check is also what proves the token before the write.
+  Its SKU pre-check is also what proves the token before the write. **Done in increment 7.**
 - **Inc 8:** the http adapter classifies undici failures into `UnavailableReason` — `unreachable` only
   when the request certainly never left — parses `Retry-After` into seconds, and leaves `body`
   undefined for anything that is not Magento's JSON. Open for the owner: a wrong
@@ -963,7 +968,7 @@ against a ceiling of 2,100.
   6.**
 - **Inc 7:** a write tool sets `retry` to its own `RetryContext`, so a defect escaping its handler is
   mapped with it: `add_order_comment` gets `{ idempotent: false, verifyBeforeRetry }`. The write gate
-  goes into `createServer`, from `config.writeTools`.
+  goes into `createServer`, from `config.writeTools`. **Done in increment 7.**
 - **Inc 8:** replace the http exit in `index.ts` with the adapter. The logger already receives the
   token as a secret in http mode; keep redaction at the sink rather than at each call site.
 
@@ -1016,9 +1021,99 @@ bytes, most of it output schemas; nothing guards that figure yet.
 ### Notes for later increments
 
 - **Inc 7:** the verify suggestion for `add_order_comment` can now point at `get_order`, which is
-  registered.
+  registered. **Done in increment 7.**
 - **Inc 8:** confirm against the real instance that `eq` on `status` is case-insensitive, as it is on
   `customer_email`. The fixture adapter and `isStockOrderStatus` both assume it.
+
+---
+
+## Increment 7 — outcome (2026-10-08)
+
+Done. The owner took three decisions, each offered with options checked against the 2.4.9 sandbox
+source: the first two before any code, the third once the source showed a gap in the error design.
+
+1. **`add_order_comment` drops `status`**, over keeping it with `destructiveHint: true` and over a
+   separate `set_order_status` tool. `OrderService::addComment` applies a comment's status to the
+   order, so with `status` the tool would not have been additive. On a stock install, the only moves
+   a comment can make are to `fraud` and back: `sales_order_status_state` assigns `fraud` to the
+   `processing` and `payment_review` states, and no other state has a second status. With
+   `notifyCustomer`, the shopper is then emailed "…has been updated with a status of Suspected Fraud"
+   (`order_update.html`). The cost, accepted: the tool cannot move an order between statuses of one
+   state, as the admin's comment form can (`History::getStatuses`) and as stores with statuses of
+   their own do. A separate tool could add that later. `status` is gone from the port's
+   `OrderCommentInput` too, so no adapter can send it. Keeping `status` with
+   `destructiveHint: false` was not offered: the spec defines `false` as "only additive updates".
+2. **`update_product_stock` refuses a product with no row at the configured source** (`NOT_FOUND`),
+   over upserting as the endpoint does. Assigning a product to a source is source selection, out of
+   scope for v1, and on a multi-source install an upsert would silently widen where a product is
+   stocked. The suggestion names the admin, and `MAGENTO_SOURCE_CODE` for when no product is
+   assigned to that source.
+3. **A 400 on a non-idempotent write carries the verify sentence**, set in the mapper, over a special
+   case in `add_order_comment`. A failed comment email is a 400 thrown after the save (below), so the
+   400 in "Writes that may already have been applied" under "Error design" was wrong to count as
+   certainly not applied. The code, Magento's message and `retryable: false` stay; only the
+   suggestion changes, and it still says to correct the input if nothing was applied. The cost,
+   accepted: a future non-idempotent write gets the verify advice for a plain validation 400 too, one
+   read more than it needs.
+
+Taken as forced, and stated to the owner before the questions: **a type without stock of its own is
+refused with `INVALID_INPUT`.** The endpoint would store a row for a grouped, configurable or bundle
+parent, a row the admin never creates (`IsSourceItemManagementAllowedForProductType`) and one that
+changes nothing that sells, while the agent would have reported success.
+
+Two sentences of the contract were reworded, with the owner's approval. "Requires human approval." is
+gone from `update_product_stock`'s description: nothing in this server enforces it, since approval is
+the host's, driven by the annotations. "The previous quantity cannot be recovered through this
+server" became "The answer reports the previous quantity; nothing else keeps it", since the answer now
+does.
+
+Read in the sandbox source:
+
+- The validators behind `SourceItemsSaveHandler` check the SKU string, the source code, the quantity
+  and the status. `module-inventory-bundle-product` adds a multi-source rule for the children of
+  Ship Together bundles. Nothing checks that the product exists or what its type is.
+- `OrderService::addComment` saves the order (line 198) before `OrderCommentSender::send` (line 201),
+  and nothing between the sender and the transport catches a failed send (`NotifySender::checkAndSend`,
+  `SenderBuilder::send`). `Magento\Email\Model\Transport::sendMessage` throws `MailException`, a
+  `LocalizedException`, which `ErrorProcessor` answers with a 400. The webapi opens no transaction
+  around the call. A failed email is therefore a 400 with the comment already stored, which is decision
+  3. It happens with `notifyCustomer`, order comment emails enabled (the default) and
+  `system/smtp/disable` off, whenever the mail transport fails. This comes from the source, not a
+  capture: the sandbox delivers mail to Mailpit, so it cannot fail there.
+- The comment email goes out only when order comment emails are enabled
+  (`identityContainer->isEnabled()`). The answer's `notifyCustomer` is therefore described as the
+  email requested, not sent.
+- The write ACLs are `Magento_InventoryApi::stock_source_item_assign` for
+  `POST /V1/inventory/source-items` and `Magento_Sales::comment` for `POST /V1/orders/{id}/comments`.
+  Reading a source item needs `Magento_InventoryApi::source`.
+
+What landed, beyond the two tools:
+
+- `tools/registry.ts` gained `writeTools(deps, enabled)`, over a map that `satisfies
+  Record<WriteToolName, …>`, so a write tool name without a definition fails the typecheck. Enabled
+  tools come in `WRITE_TOOL_NAMES` order, whatever the allowlist's order.
+- `ServerDeps.writeTools` is required, so every caller states the gate. A withheld tool is never
+  registered: it is absent from `tools/list`, and a call to it is the SDK's protocol error,
+  `Tool … not found`, before any handler runs.
+- `index.ts` logs the gate's state once at startup: `Write tools enabled: …` or
+  `No write tools enabled: read-only.`
+- Each handler maps its own failures before the write as idempotent, since nothing has been written
+  yet. Left to the wrapper, `add_order_comment`'s lookup timeout would have said the comment may be
+  stored. Those same reads prove the token, so a 401 on the write is `PERMISSION_DENIED`: the "reads
+  granted, writes not" gap. A defect that escapes a write handler is still mapped with the tool's own
+  retry context, which the server spec pins.
+- The fixture adapter's comment-status handling, the state-to-status map and its 400, went with the
+  port field.
+
+Token budget, measured: `tools/list` with both write tools enabled takes 17,587 bytes, of which
+`update_product_stock` takes 1,726 and `add_order_comment` 1,516. The five read tools still take
+14,343.
+
+### Notes for later increments
+
+- **Inc 8:** the README's ACL list gains the two write resources above and
+  `Magento_InventoryApi::source`, and its write-gate section can cite the startup log line. The http
+  adapter's `addOrderComment` sends no `status`; the port gives it none to send.
 
 ---
 
@@ -1029,7 +1124,9 @@ bytes, most of it output schemas; nothing guards that figure yet.
 - CI: the same two commands run on every push and PR via `.github/workflows/ci.yml`, against
   fixtures only, with no secrets configured
 - `npm run build && npx @modelcontextprotocol/inspector node dist/index.js` — manual tool calls
-- Gate check: run the inspector with `MAGENTO_MCP_WRITE_TOOLS` unset and confirm only five tools list
+- Gate check: with `MAGENTO_MCP_WRITE_TOOLS` unset only the five read tools list, each name adds its
+  tool, and a call to a withheld tool is refused as unknown. Pinned by `tests/server/server.test.ts`
+  and, through the built server, `tests/process/startup.test.ts`
 - Config guards: starting with `MAGENTO_MODE=fixture` plus a `MAGENTO_BASE_URL` must exit non-zero;
   starting with a misspelled write-tool name must exit non-zero. Both are pinned by
   `tests/process/startup.test.ts`, which builds `dist/` and launches it over stdio

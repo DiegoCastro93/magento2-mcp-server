@@ -60,6 +60,9 @@ export const ProductDetailSchema = ProductSummarySchema.extend({
     updatedAt: z.string()
 });
 
+/** A source item's status, as the stock tools read and write it. */
+const SourceStatusSchema = z.enum(['in_stock', 'out_of_stock']);
+
 /**
  * Stock at the configured source and stock. Every field but `sourceCode` is
  * optional: each comes from its own upstream call, and one failing must not
@@ -69,7 +72,7 @@ export const ProductDetailSchema = ProductSummarySchema.extend({
 export const StockDetailSchema = z.strictObject({
     sourceCode: z.string(),
     sourceQuantity: z.number().optional().describe('On-hand quantity at sourceCode.'),
-    sourceStatus: z.enum(['in_stock', 'out_of_stock']).optional(),
+    sourceStatus: SourceStatusSchema.optional(),
     salableQuantity: z
         .number()
         .optional()
@@ -191,6 +194,36 @@ export const GetCustomerOutputSchema = z.strictObject({
     customer: CustomerSchema
 });
 
+/** A source item as a stock write sees it, before and after. */
+const SourceItemStateSchema = z.strictObject({
+    quantity: z.number(),
+    status: SourceStatusSchema
+});
+
+/** `update_product_stock`'s `outputSchema`. No `notice`: nothing in it is truncated. */
+export const UpdateProductStockOutputSchema = z.strictObject({
+    sku: z.string(),
+    sourceCode: z.string(),
+    previous: SourceItemStateSchema,
+    current: SourceItemStateSchema
+});
+
+/**
+ * `add_order_comment`'s `outputSchema`. The comment is not echoed: the agent
+ * wrote it, and it may run to 2,000 characters.
+ */
+export const AddOrderCommentOutputSchema = z.strictObject({
+    incrementId: z.string(),
+    status: z.string().describe("The order's status, recorded with the comment and left unchanged."),
+    notifyCustomer: z
+        .boolean()
+        .describe(
+            'Whether an email to the customer was requested. Magento sends it only when order comment emails ' +
+                'are enabled in its configuration.'
+        ),
+    visibleOnFront: z.boolean()
+});
+
 export type ProductSummary = z.infer<typeof ProductSummarySchema>;
 export type ProductDetail = z.infer<typeof ProductDetailSchema>;
 export type StockDetail = z.infer<typeof StockDetailSchema>;
@@ -206,3 +239,5 @@ export type SearchProductsOutput = z.infer<typeof SearchProductsOutputSchema>;
 export type SearchOrdersOutput = z.infer<typeof SearchOrdersOutputSchema>;
 export type GetOrderOutput = z.infer<typeof GetOrderOutputSchema>;
 export type GetCustomerOutput = z.infer<typeof GetCustomerOutputSchema>;
+export type UpdateProductStockOutput = z.infer<typeof UpdateProductStockOutputSchema>;
+export type AddOrderCommentOutput = z.infer<typeof AddOrderCommentOutputSchema>;

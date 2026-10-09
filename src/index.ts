@@ -73,7 +73,14 @@ async function serve(config: Config, logger: Logger): Promise<void> {
     fixtureBanner(config.fixturesDir);
 
     const serverInfo = await readServerInfo();
-    const deps = { client, logger, sourceCode: config.sourceCode, stockId: config.stockId, serverInfo };
+    const deps = {
+        client,
+        logger,
+        sourceCode: config.sourceCode,
+        stockId: config.stockId,
+        serverInfo,
+        writeTools: config.writeTools
+    };
     const handle = serveStdio(() => createServer(deps), {
         onerror: (error) => logger.error('stdio transport error', error)
     });
@@ -84,6 +91,12 @@ async function serve(config: Config, logger: Logger): Promise<void> {
         });
     }
     logger.info(`${serverInfo.name} ${serverInfo.version} is serving over stdio.`);
+    // The permission boundary's state, for the operator, without a tools/list.
+    logger.info(
+        config.writeTools.length === 0
+            ? 'No write tools enabled: read-only.'
+            : `Write tools enabled: ${config.writeTools.join(', ')}.`
+    );
 }
 
 /**

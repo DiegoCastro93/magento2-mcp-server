@@ -65,11 +65,12 @@ export interface MagentoClient {
     updateSourceItem(update: SourceItemUpdate): Promise<void>;
 
     /**
-     * Appends to the order's status history, newest first.
+     * Appends to the order's status history, newest first. The entry records
+     * the order's current status, and the order keeps it: see
+     * {@link OrderCommentInput} for why there is no status to send.
      *
      * @param orderId the internal `entity_id`, not the increment ID.
-     * @throws {MagentoRequestError} 404 for an unknown order; 400 for a status
-     *   outside the order's current state.
+     * @throws {MagentoRequestError} 404 for an unknown order.
      */
     addOrderComment(orderId: number, input: OrderCommentInput): Promise<void>;
 }
@@ -179,16 +180,15 @@ export interface SourceItemUpdate {
     readonly status: SourceItemStatus;
 }
 
+/**
+ * A comment, and nothing that changes the order. Magento 2.4.9's endpoint also
+ * takes a status, and *applies* it to the order (`OrderService::addComment`):
+ * on a stock install, that can flag an order as `fraud`. Leaving it out of the
+ * port is what keeps `add_order_comment` purely additive, in every adapter.
+ */
 export interface OrderCommentInput {
     readonly comment: string;
-    /**
-     * Status recorded with the comment. Magento 2.4.9 also *applies* it to the
-     * order, and refuses with a 400 a status that does not belong to the order's
-     * current state (`OrderService::addComment`). Omitted, the current status is
-     * recorded and the order is left as it was.
-     */
-    readonly status?: string | undefined;
-    /** Sends the customer an email. */
+    /** Asks Magento to email the customer, which it does only when order comment emails are enabled. */
     readonly notifyCustomer: boolean;
     /** Shows the comment in the customer's account area. */
     readonly visibleOnFront: boolean;

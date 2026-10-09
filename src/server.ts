@@ -12,7 +12,8 @@ import { toToolError } from './errors/map-upstream.js';
 import { toToolResult } from './errors/to-result.js';
 import { logToolError, type Logger } from './shared/logger.js';
 import type { ToolDefinition, ToolDeps } from './tools/definition.js';
-import { readTools } from './tools/registry.js';
+import type { WriteToolName } from './tools/names.js';
+import { readTools, writeTools } from './tools/registry.js';
 
 export interface ServerInfo {
     readonly name: string;
@@ -21,11 +22,23 @@ export interface ServerInfo {
 
 export interface ServerDeps extends ToolDeps {
     readonly serverInfo: ServerInfo;
+    /**
+     * The write gate: the write tools to register, from `MAGENTO_MCP_WRITE_TOOLS`.
+     * Required, so every caller states it and nothing registers a write by default.
+     */
+    readonly writeTools: readonly WriteToolName[];
 }
 
+/**
+ * Registers the read tools, then the write tools the gate allows. A write tool
+ * left out is not registered at all: it is absent from `tools/list`, and a
+ * call to it is refused by the SDK as an unknown tool.
+ */
 export function createServer(deps: ServerDeps): McpServer {
     const server = new McpServer(deps.serverInfo, { capabilities: { tools: {} } });
-    for (const tool of readTools(deps)) addTool(server, tool, deps.logger);
+    for (const tool of [...readTools(deps), ...writeTools(deps, deps.writeTools)]) {
+        addTool(server, tool, deps.logger);
+    }
     return server;
 }
 

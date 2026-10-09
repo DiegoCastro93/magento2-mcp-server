@@ -376,37 +376,12 @@ describe('addOrderComment', () => {
         expect(histories[1]?.comment).toContain('hold the shipment');
     });
 
-    it('records the current status and leaves the order alone when no status is given', async () => {
+    it('records the current status, and leaves the order\'s status as it was', async () => {
         await client.addOrderComment(3, comment);
 
         const order = await client.findOrderByIncrementId('000000003');
         expect(order?.status).toBe('processing');
         expect(order?.status_histories?.[0]).toMatchObject({ status: 'processing', is_customer_notified: 0 });
-    });
-
-    it('applies a status of the current state to the order, as 2.4.9 does', async () => {
-        await client.addOrderComment(3, { ...comment, status: 'fraud' });
-
-        const order = await client.findOrderByIncrementId('000000003');
-        expect(order?.status).toBe('fraud');
-        expect(order?.state).toBe('processing');
-        expect(order?.status_histories?.[0]?.status).toBe('fraud');
-    });
-
-    it('refuses a status outside the current state with Magento\'s 400 and its parameter', async () => {
-        const error = await refusal(client.addOrderComment(3, { ...comment, status: 'complete' }));
-
-        expect(error.status).toBe(400);
-        expect(error.body).toEqual({
-            message: 'Unable to add comment: The status "%1" is not part of the order status history.',
-            parameters: ['complete']
-        });
-        expect((await client.findOrderByIncrementId('000000003'))?.status_histories).toEqual([]);
-    });
-
-    it('compares the status case-sensitively, as array_key_exists does', async () => {
-        const error = await refusal(client.addOrderComment(3, { ...comment, status: 'Fraud' }));
-        expect(error.status).toBe(400);
     });
 
     it('refuses an unknown order with Magento\'s 404', async () => {

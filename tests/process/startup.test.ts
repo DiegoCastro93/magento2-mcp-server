@@ -133,6 +133,27 @@ describe('the built server', () => {
         expect(stdout).toBe('');
         expect(stderr).toContain('FIXTURE MODE');
         expect(stderr).toContain(join(ROOT, 'fixtures'));
+        expect(stderr).toContain('No write tools enabled: read-only.');
+    });
+
+    it('registers a write tool named in the allowlist, and says which on stderr', async () => {
+        const transport = new RecordingTransport(environment({ MAGENTO_MCP_WRITE_TOOLS: 'add_order_comment' }));
+        const client = new Client({ name: 'process-spec', version: '0.0.0' });
+
+        await client.connect(transport);
+        const { tools } = await client.listTools();
+        await client.close();
+
+        // The five read tools, plus the one write tool named.
+        expect(tools.map((t) => t.name)).toEqual([
+            'search_products',
+            'get_product',
+            'search_orders',
+            'get_order',
+            'get_customer',
+            'add_order_comment'
+        ]);
+        expect(transport.stderr).toContain('Write tools enabled: add_order_comment.');
     });
 
     describe('refuses to start, exiting 1 with stdout untouched', () => {

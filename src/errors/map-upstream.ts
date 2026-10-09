@@ -72,7 +72,14 @@ function fromStatus(error: MagentoRequestError, context: UpstreamContext): ToolE
     switch (status) {
         case 400:
             return new ToolError('INVALID_INPUT', magentoMessage(body) ?? 'Magento rejected the request as invalid.', {
-                suggestion: 'Correct the input before calling again; the same call will be refused the same way.',
+                // Magento answers every LocalizedException with a 400, wherever the
+                // service throws it, so a 400 does not prove nothing was applied:
+                // OrderService::addComment saves the order, then a failed email is a
+                // MailException, a 400 with the comment already stored.
+                suggestion: context.idempotent
+                    ? 'Correct the input before calling again; the same call will be refused the same way.'
+                    : `${MAY_HAVE_APPLIED} ${context.verifyBeforeRetry} If it was not applied, correct the input ` +
+                      'before calling again.',
                 cause: error
             });
         case 401:

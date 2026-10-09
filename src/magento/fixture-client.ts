@@ -68,25 +68,8 @@ export interface FixtureClientOptions {
 const DEFAULT_SOURCE_CODE = 'default';
 const DEFAULT_STOCK_ID = 1;
 
-/**
- * Stock Magento's state → status assignments, from `module-sales`'
- * `Setup/Patch/Data/InstallOrderStatusesAndInitialSalesConfig.php`. A comment
- * may only carry a status of the order's current state.
- */
-const STATE_STATUSES: Readonly<Record<string, readonly string[]>> = {
-    new: ['pending'],
-    pending_payment: ['pending_payment'],
-    processing: ['processing', 'fraud'],
-    complete: ['complete'],
-    closed: ['closed'],
-    canceled: ['canceled'],
-    holded: ['holded'],
-    payment_review: ['payment_review', 'fraud']
-};
-
 // Magento's own messages for the refusals the fixture reproduces.
 const UNKNOWN_ORDER = "The entity that was requested doesn't exist. Verify the entity and try again.";
-const STATUS_OUTSIDE_STATE = 'Unable to add comment: The status "%1" is not part of the order status history.';
 const NO_SOURCE_ITEMS = "Can't check requested quantity for products without Source Items support.";
 
 export class FixtureMagentoClient implements MagentoClient {
@@ -215,20 +198,13 @@ export class FixtureMagentoClient implements MagentoClient {
         this.recomputeSalable(update.sku, status === SOURCE_ITEM_STATUS.in_stock ? update.quantity : 0);
     }
 
-    /** Replicates `OrderService::addComment`. */
+    /** Replicates `OrderService::addComment` called without a status. */
     async addOrderComment(orderId: number, input: OrderCommentInput): Promise<void> {
         const order = this.orders.get(orderId);
         if (order === undefined) {
             throw new MagentoRequestError(404, { message: UNKNOWN_ORDER });
         }
 
-        // Empty counts as absent, as PHP's truthiness check does. The match is
-        // case-sensitive, like `array_key_exists`.
-        const requested = input.status === undefined || input.status === '' ? undefined : input.status;
-        if (requested !== undefined && !(STATE_STATUSES[order.state] ?? []).includes(requested)) {
-            throw new MagentoRequestError(400, { message: STATUS_OUTSIDE_STATE, parameters: [requested] });
-        }
-        const status = requested ?? order.status;
         const createdAt = toMagentoTimestamp(this.now());
 
         const entry = {
@@ -238,12 +214,11 @@ export class FixtureMagentoClient implements MagentoClient {
             is_customer_notified: input.notifyCustomer ? 1 : 0,
             is_visible_on_front: input.visibleOnFront ? 1 : 0,
             parent_id: order.entity_id,
-            status
+            status: order.status
         };
 
         this.orders.set(orderId, {
             ...order,
-            status,
             updated_at: createdAt,
             status_histories: [entry, ...(order.status_histories ?? [])]
         });

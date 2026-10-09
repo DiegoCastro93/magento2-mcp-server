@@ -11,7 +11,7 @@ import type { MagentoClient } from '../../src/magento/client.js';
 import type { FixtureMagentoClient } from '../../src/magento/fixture-client.js';
 import { addTool, createServer } from '../../src/server.js';
 import { READ_ANNOTATIONS, READ_RETRY, type ToolDefinition } from '../../src/tools/definition.js';
-import { READ_TOOL_NAMES } from '../../src/tools/names.js';
+import { READ_TOOL_NAMES, WRITE_TOOL_NAMES, type WriteToolName } from '../../src/tools/names.js';
 import { loadFixtureClient, memoryLogger, override } from '../tools/client-stubs.js';
 
 const SERVER_INFO = { name: 'magento2-mcp-server', version: '0.0.0-test' };
@@ -36,9 +36,12 @@ async function connect(server: McpServer): Promise<Client> {
     return client;
 }
 
-function serve(magento: MagentoClient = fixtures): { connected: Promise<Client>; log: () => string } {
+function serve(
+    magento: MagentoClient = fixtures,
+    writeTools: readonly WriteToolName[] = []
+): { connected: Promise<Client>; log: () => string } {
     const { logger, output } = memoryLogger();
-    const deps = { client: magento, logger, sourceCode: 'default', stockId: 1, serverInfo: SERVER_INFO };
+    const deps = { client: magento, logger, sourceCode: 'default', stockId: 1, serverInfo: SERVER_INFO, writeTools };
     const server = createServer(deps);
     return { connected: connect(server), log: output };
 }
@@ -51,7 +54,7 @@ function textOf(result: Awaited<ReturnType<Client['callTool']>>): string {
 }
 
 describe('createServer', () => {
-    it('lists the five read tools, each with all four hints and a closed output schema', async () => {
+    it('lists only the five read tools with no write tool enabled, all hints set, output schemas closed', async () => {
         const { tools } = await (await serve().connected).listTools();
 
         expect(tools.map((t) => t.name)).toEqual([...READ_TOOL_NAMES]);
@@ -145,6 +148,110 @@ describe('createServer', () => {
 
         expect(result.isError).toBe(true);
         expect(result.structuredContent).toBeUndefined();
+    });
+});
+
+describe('the write gate', () => {
+    // 5 read tools always; each enabled write tool adds one: 5, 6 or 7.
+    async function listed(writeTools: readonly WriteToolName[]): Promise<string[]> {
+        const { tools } = await (await serve(fixtures, writeTools).connected).listTools();
+        return tools.map((t) => t.name);
+    }
+
+    it.each(WRITE_TOOL_NAMES)('registers %s alone when it is the only one named: 6 tools', async (name) => {
+        expect(await listed([name])).toEqual([...READ_TOOL_NAMES, name]);
+    });
+
+    it('registers both in canonical order, whatever the allowlist order: 7 tools', async () => {
+        const names = await listed(['add_order_comment', 'update_product_stock']);
+
+        expect(names).toHaveLength(7);
+        expect(names).toEqual([...READ_TOOL_NAMES, 'update_product_stock', 'add_order_comment']);
+    });
+
+    it('marks the stock overwrite destructive and the comment additive, all four hints explicit', async () => {
+        const { tools } = await (await serve(fixtures, [...WRITE_TOOL_NAMES]).connected).listTools();
+        const hints = (name: string) => tools.find((t) => t.name === name)?.annotations;
+
+        expect(hints('update_product_stock')).toEqual({
+            readOnlyHint: false,
+            destructiveHint: true,
+            idempotentHint: true,
+            openWorldHint: true
+        });
+        expect(hints('add_order_comment')).toEqual({
+            readOnlyHint: false,
+            destructiveHint: false,
+            idempotentHint: false,
+            openWorldHint: true
+        });
+        for (const name of WRITE_TOOL_NAMES) {
+            expect(tools.find((t) => t.name === name)?.outputSchema, name).toMatchObject({
+                type: 'object',
+                additionalProperties: false
+            });
+        }
+    });
+
+    it('refuses a withheld write tool as an unknown tool, and writes nothing', async () => {
+        // The gate is registration, not a hidden tools/list entry: the SDK
+        // answers a call to it with a protocol error, before any handler.
+        const store = await loadFixtureClient();
+        const connected = await serve(store, ['add_order_comment']).connected;
+
+        await expect(
+            connected.callTool({ name: 'update_product_stock', arguments: { sku: '24-MB01', quantity: 0 } })
+        ).rejects.toThrow('Tool update_product_stock not found');
+        expect(await store.getSourceItem('24-MB01', 'default')).toMatchObject({ quantity: 100 });
+    });
+
+    it('runs an enabled write tool through the wrapper', async () => {
+        const store = await loadFixtureClient();
+        const connected = await serve(store, ['update_product_stock']).connected;
+
+        const result = await connected.callTool({
+            name: 'update_product_stock',
+            arguments: { sku: '24-MB01', quantity: 120 }
+        });
+
+        expect(result.isError).toBeFalsy();
+        expect(result.structuredContent).toEqual({
+            sku: '24-MB01',
+            sourceCode: 'default',
+            previous: { quantity: 100, status: 'in_stock' },
+            current: { quantity: 120, status: 'in_stock' }
+        });
+        expect(textOf(result)).toBe('Set 24-MB01 to 120 on hand at source "default", in stock (was 100, in stock).');
+    });
+
+    it("maps a defect escaping a write handler with that tool's own retry context", async () => {
+        // A synchronous throw escapes the handler's own mapping and reaches
+        // the wrapper, which must not call a maybe-applied comment retryable.
+        const store = await loadFixtureClient();
+        const broken = override(store, {
+            addOrderComment: () => {
+                throw new TypeError('adapter defect');
+            }
+        });
+        const { connected, log } = serve(broken, ['add_order_comment']);
+
+        const result = await (await connected).callTool({
+            name: 'add_order_comment',
+            arguments: { incrementId: '000000003', comment: 'Packed.' }
+        });
+
+        expect(result.isError).toBe(true);
+        expect(result.structuredContent).toMatchObject({
+            error: {
+                code: 'INTERNAL_ERROR',
+                retryable: false,
+                suggestion:
+                    'Magento may have applied the request before the failure. ' +
+                    "Check the order's comments with get_order before retrying."
+            }
+        });
+        expect(JSON.stringify(result)).not.toContain('adapter defect');
+        expect(log()).toContain('ERROR add_order_comment: INTERNAL_ERROR');
     });
 });
 

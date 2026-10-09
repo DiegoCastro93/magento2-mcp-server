@@ -263,11 +263,25 @@ describe('toToolError', () => {
             expect(error.suggestion).toBe(`Magento may have applied the request before the failure. ${VERIFY}`);
         });
 
+        // Magento answers every LocalizedException with a 400, wherever the service
+        // throws it: OrderService::addComment saves the order, then a failed email
+        // is a MailException, a 400 with the comment already stored.
+        it('400: keeps the code, the message and retryable, and says how to verify', () => {
+            const input = new MagentoRequestError(400, { message: 'Unable to send mail. Please try again later.' });
+            const idempotent = toToolError(input, READ);
+            const error = toToolError(input, COMMENT);
+
+            expect(error).toMatchObject({ code: 'INVALID_INPUT', message: idempotent.message, retryable: false });
+            expect(error.suggestion).toBe(
+                `Magento may have applied the request before the failure. ${VERIFY} ` +
+                    'If it was not applied, correct the input before calling again.'
+            );
+        });
+
         // Each of these was refused before the operation ran. A 429 included:
         // Magento's backpressure check sits in RequestValidator, before the service.
         const notApplied: readonly [string, unknown][] = [
             ['unreachable', new MagentoUnavailableError(HOST, 'unreachable')],
-            ['400', new MagentoRequestError(400, { message: 'Bad.' })],
             ['401', new MagentoRequestError(401, UNAUTHORIZED)],
             ['403', new MagentoRequestError(403)],
             ['404', new MagentoRequestError(404)],

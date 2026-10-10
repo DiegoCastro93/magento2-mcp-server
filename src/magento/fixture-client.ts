@@ -198,7 +198,11 @@ export class FixtureMagentoClient implements MagentoClient {
         this.recomputeSalable(update.sku, status === SOURCE_ITEM_STATUS.in_stock ? update.quantity : 0);
     }
 
-    /** Replicates `OrderService::addComment` called without a status. */
+    /**
+     * Replicates `OrderService::addComment` called without a status: the entry
+     * records the order's current status, and then the order is saved, which
+     * may move a lagging order on (see {@link reconciledState}).
+     */
     async addOrderComment(orderId: number, input: OrderCommentInput): Promise<void> {
         const order = this.orders.get(orderId);
         if (order === undefined) {
@@ -219,6 +223,7 @@ export class FixtureMagentoClient implements MagentoClient {
 
         this.orders.set(orderId, {
             ...order,
+            ...reconciledState(order),
             updated_at: createdAt,
             status_histories: [entry, ...(order.status_histories ?? [])]
         });
@@ -334,6 +339,50 @@ function historyId(entry: RawOrderStatusHistory): number {
 /** Magento's timestamp format: UTC, `YYYY-MM-DD HH:MM:SS`. */
 function toMagentoTimestamp(date: Date): string {
     return date.toISOString().slice(0, 19).replace('T', ' ');
+}
+
+/**
+ * The state and status an order save leaves `order` in, or `undefined` when
+ * it leaves them alone. Magento 2.4.9 runs `Handler\State::check` on every
+ * order save (`ResourceModel\Order::save`), which re-derives the state from
+ * the order's invoices, shipments and credit memos and overwrites both fields:
+ * an order whose state lags behind them moves on.
+ *
+ * Mirrored from `State::check` and `Order::canInvoice`, `canShip` and
+ * `canCreditmemo` for what the fixtures hold: lines without a parent, which
+ * carry a line's quantities, and the stock default status of each state.
+ * Left out, since no fixture has them: action flags, `locked_do_*`, bundles
+ * shipped together, open invoices with an amount due, payment review, a zero
+ * grand total, and a credit memo's adjustment fee.
+ */
+export function reconciledState(order: RawOrder): { state: string; status: string } | undefined {
+    const { state } = order;
+    if (state === 'canceled' || state === 'holded') return undefined;
+
+    const qty = (value: number | null | undefined): number => value ?? 0;
+    const lines = order.items.filter((item) => item.parent_item_id === undefined || item.parent_item_id === null);
+    const canInvoice =
+        state !== 'complete' &&
+        state !== 'closed' &&
+        lines.some((item) => item.qty_ordered - qty(item.qty_invoiced) - qty(item.qty_canceled) > 0);
+    if (canInvoice) return undefined;
+
+    const isVirtual = order.is_virtual === 1;
+    const fulfilled = lines.every(
+        (item) =>
+            item.is_virtual === 1 ||
+            item.qty_ordered - qty(item.qty_shipped) - qty(item.qty_refunded) - qty(item.qty_canceled) <= 0
+    );
+    const shipped = isVirtual || fulfilled;
+    const refundable = Math.round(qty(order.total_paid) * 100) / 100 - qty(order.total_refunded);
+    const canCreditmemo = state !== 'closed' && Math.abs(refundable) >= 0.0001;
+
+    if ((state === 'processing' || state === 'complete') && !canCreditmemo && shipped && !isVirtual) {
+        return { state: 'closed', status: 'closed' };
+    }
+    if (isVirtual && order.status === 'closed') return { state: 'closed', status: 'closed' };
+    if (state === 'processing' && shipped) return { state: 'complete', status: 'complete' };
+    return undefined;
 }
 
 // ------------------------------------------------------------------ loading

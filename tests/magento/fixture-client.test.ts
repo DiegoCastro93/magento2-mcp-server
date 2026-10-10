@@ -4,7 +4,8 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { MagentoRequestError, type OrderSearchParams, type ProductSearchParams } from '../../src/magento/client.js';
-import { FixtureMagentoClient } from '../../src/magento/fixture-client.js';
+import { FixtureMagentoClient, reconciledState } from '../../src/magento/fixture-client.js';
+import type { RawOrder, RawOrderItem } from '../../src/magento/raw-types.js';
 
 const FIXTURES = fileURLToPath(new URL('../../fixtures', import.meta.url));
 const NOW = new Date('2026-03-11T08:00:00Z');
@@ -184,11 +185,18 @@ describe('searchProducts', () => {
 
 describe('searchOrders', () => {
     it('returns newest first, increment_id descending on a tie', async () => {
-        expect(await orderIds({})).toEqual(['000000005', '000000004', '000000003', '000000002', '000000001']);
+        expect(await orderIds({})).toEqual([
+            '000000005',
+            '000000004',
+            '000000003',
+            '000000002',
+            '000000001',
+            '000000006'
+        ]);
     });
 
     it('filters by exact status', async () => {
-        expect(await orderIds({ status: 'processing' })).toEqual(['000000003']);
+        expect(await orderIds({ status: 'processing' })).toEqual(['000000003', '000000006']);
     });
 
     it('filters by customer email case-insensitively, guest orders included', async () => {
@@ -198,7 +206,7 @@ describe('searchOrders', () => {
 
     it('includes the whole createdTo day and nothing after it, in UTC', async () => {
         // 000000003 is 2026-03-04 23:30:00; 000000004 is 2026-03-05 00:00:00.
-        expect(await orderIds({ createdTo: '2026-03-04' })).toEqual(['000000003', '000000002', '000000001']);
+        expect(await orderIds({ createdTo: '2026-03-04' })).toEqual(['000000003', '000000002', '000000001', '000000006']);
     });
 
     it('starts createdFrom at the first second of the day', async () => {
@@ -215,7 +223,7 @@ describe('searchOrders', () => {
     it('slices pages and reports the true total', async () => {
         const second = await client.searchOrders({ page: 2, pageSize: 2 });
         expect(second.items.map((o) => o.increment_id)).toEqual(['000000003', '000000002']);
-        expect(second.total_count).toBe(5);
+        expect(second.total_count).toBe(6);
     });
 });
 
@@ -376,7 +384,7 @@ describe('addOrderComment', () => {
         expect(histories[1]?.comment).toContain('hold the shipment');
     });
 
-    it('records the current status, and leaves the order\'s status as it was', async () => {
+    it('records the current status, and leaves a consistent order where it was', async () => {
         await client.addOrderComment(3, comment);
 
         const order = await client.findOrderByIncrementId('000000003');
@@ -384,9 +392,67 @@ describe('addOrderComment', () => {
         expect(order?.status_histories?.[0]).toMatchObject({ status: 'processing', is_customer_notified: 0 });
     });
 
+    // Magento saves the whole order with the comment, and the save runs
+    // Handler\State::check: 000000006 is invoiced and shipped in full but was
+    // never moved on, like the 2.4.9 sample-data order.
+    it('moves a lagging order on, as the order save does, after recording its old status', async () => {
+        await client.addOrderComment(6, comment);
+
+        const order = await client.findOrderByIncrementId('000000006');
+        expect(order).toMatchObject({ state: 'complete', status: 'complete', updated_at: '2026-03-11 08:00:00' });
+        expect(order?.status_histories?.[0]).toMatchObject({ status: 'processing' });
+    });
+
     it('refuses an unknown order with Magento\'s 404', async () => {
         const error = await refusal(client.addOrderComment(999, comment));
         expect(error.status).toBe(404);
+    });
+});
+
+describe('reconciledState', () => {
+    const line = (counts: Partial<RawOrderItem> = {}): RawOrderItem => ({
+        item_id: 1,
+        sku: 'X',
+        name: 'X',
+        product_type: 'simple',
+        qty_ordered: 2,
+        price: 10,
+        row_total: 20,
+        ...counts
+    });
+    const order = (fields: Partial<RawOrder>, items: readonly RawOrderItem[]): RawOrder =>
+        ({ state: 'processing', status: 'processing', grand_total: 20, total_paid: 20, ...fields, items }) as RawOrder;
+    const DONE = { qty_invoiced: 2, qty_shipped: 2 };
+
+    it.each<readonly [string, RawOrder, ReturnType<typeof reconciledState>]>([
+        ['processing, invoiced and shipped → complete', order({}, [line(DONE)]), { state: 'complete', status: 'complete' }],
+        [
+            'processing, invoiced, shipped and refunded in full → closed',
+            order({ total_refunded: 20 }, [line({ ...DONE, qty_refunded: 2 })]),
+            { state: 'closed', status: 'closed' }
+        ],
+        [
+            'complete and refunded in full → closed',
+            order({ state: 'complete', status: 'complete', total_refunded: 20 }, [line(DONE)]),
+            { state: 'closed', status: 'closed' }
+        ],
+        [
+            'processing and virtual, invoiced → complete',
+            order({ is_virtual: 1 }, [line({ qty_invoiced: 2, is_virtual: 1 })]),
+            { state: 'complete', status: 'complete' }
+        ],
+        ['processing, partly shipped → unchanged', order({}, [line({ qty_invoiced: 2, qty_shipped: 1 })]), undefined],
+        ['processing, shipped but partly invoiced → unchanged', order({}, [line({ qty_invoiced: 1, qty_shipped: 2 })]), undefined],
+        ['complete with something refundable → unchanged', order({ state: 'complete', status: 'complete' }, [line(DONE)]), undefined],
+        ['holded → unchanged', order({ state: 'holded', status: 'holded' }, [line(DONE)]), undefined],
+        ['canceled → unchanged', order({ state: 'canceled', status: 'canceled' }, [line()]), undefined],
+        [
+            'a child row is not a line of its own',
+            order({}, [line(DONE), { ...line(), item_id: 2, parent_item_id: 1 }]),
+            { state: 'complete', status: 'complete' }
+        ]
+    ])('%s', (_, raw, expected) => {
+        expect(reconciledState(raw)).toEqual(expected);
     });
 });
 

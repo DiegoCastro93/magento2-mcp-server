@@ -20,9 +20,9 @@ commits, README all in English).
 
 ---
 
-## Status — 2026-10-08
+## Status — 2026-10-09
 
-Increments 0 to 7 are done. 0 to 6 are committed and pushed, each with CI green:
+Increments 0 to 8 are done. Increments 0 to 7 are committed and pushed, each with CI green:
 
 - `3999292` — scaffold, config guards, CI.
 - `4669022` — CI actions pinned to `@v5` (their own runtime was the deprecated Node 20; the project's
@@ -41,18 +41,18 @@ Increments 0 to 7 are done. 0 to 6 are committed and pushed, each with CI green:
   outcome".
 - `a65d1f7` — increment 6: the remaining read tools, `search_products`, `search_orders`, `get_order`
   and `get_customer`, resting on two owner decisions recorded under "Increment 6 — outcome".
-- Increment 7 — the write tools, `update_product_stock` and `add_order_comment`, and the write gate
-  in `createServer`, resting on three owner decisions recorded under "Increment 7 — outcome". Its hash
-  is added here with increment 8.
+- `167e3ff` — increment 7: the write tools, `update_product_stock` and `add_order_comment`, and the
+  write gate in `createServer`, resting on three owner decisions recorded under "Increment 7 —
+  outcome".
+- the commit that adds this line — increment 8: the http adapter with its startup probe, the base
+  URL checks, the README, and the correction to `add_order_comment` that the sandbox smoke forced: a
+  comment's order save can move a lagging order, so the tool is now destructive and reports the
+  order's state before and after. It rests on five owner decisions recorded under "Increment 8 —
+  outcome".
 
-**Next: increment 8 — the http adapter and the docs. Not started.** Before any code, the owner
-settles one open question, offered with options:
-
-1. **A wrong `MAGENTO_BASE_URL` path.** It makes every lookup a 404, which the adapter reads as "does
-   not exist", so a misconfiguration looks like an empty store. See the increment 3 note.
-
-Its other inputs are the increment 8 notes under each "outcome" section below. "Increment 7 —
-outcome" names the write ACLs for the README, and the status the adapter must never send.
+**v1 is complete.** Open items, none of them scheduled, are listed at the end of "Increment 8 —
+outcome": the size of `tools/list`, which no test guards, and a SKU with an encoded slash behind
+Apache.
 
 This is the versioned copy of the plan. The working copy lives outside the repository; keep the two in
 step whenever either changes, with one deliberate difference: this copy's "Environment blockers"
@@ -107,7 +107,7 @@ neighbouring projects — which belongs in the working copy and not in a publish
 | Decision | Choice |
 |---|---|
 | Result shape | `structuredContent` validated by `outputSchema`; the text block carries only a one-line summary plus any truncation notice. Not duplicated. |
-| Adapter | `MagentoClient` port with `http` and `fixture` implementations for runtime, **plus** an HTTP-level mock (undici `MockAgent`, falling back to MSW) used only in tests for the HTTP client and the error mapper. |
+| Adapter | `MagentoClient` port with `http` and `fixture` implementations for runtime, **plus** an HTTP-level mock (undici `MockAgent`, through undici's own `fetch`, injected; see "Increment 8 — outcome") used only in tests for the HTTP client. |
 | Write gate | Per-tool allowlist: `MAGENTO_MCP_WRITE_TOOLS=update_product_stock,add_order_comment`. Empty/unset registers no write tools. Unknown names fail startup. |
 | Inventory | MSI `source-items`, with `source_code` fixed by env var (default `default`). `get_product` exposes `is_salable`, `manage_stock` (as Magento resolves it, `use_config_manage_stock` inheritance included; see "Increment 5 — outcome"), `salable_quantity` and `source_quantity`. Multi-store and source selection stay out of scope. |
 
@@ -142,7 +142,7 @@ magento2-mcp-server/
 │   ├── stdout-guard.ts             # points the global console at stderr
 │   ├── magento/
 │   │   ├── client.ts               # MagentoClient port (interface) + shared DTO types
-│   │   ├── http-client.ts          # fetch + bearer token + timeout + response→error mapping
+│   │   ├── http-client.ts          # fetch + bearer token + timeout + response→error mapping + startup probe
 │   │   ├── fixture-client.ts       # serves canned JSON from fixtures/
 │   │   ├── product-types.ts        # which product types carry stock of their own
 │   │   ├── order-statuses.ts       # the order statuses of a stock install
@@ -341,8 +341,9 @@ Upstream: `GET /V1/customers/{id}` or `GET /V1/customers/search` filtered on `em
 
 ### Write tools — registered only when listed in `MAGENTO_MCP_WRITE_TOOLS`
 
-The two write tools deliberately carry **different** annotations, because the spec's `destructiveHint`
-distinguishes overwrites from additions:
+Both write tools are destructive, and they differ in `idempotentHint`. They were meant to differ in
+`destructiveHint` too, the comment being additive, until the sandbox showed that a comment's order save
+can move the order; see "Increment 8 — outcome".
 
 **`update_product_stock`** — `readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true`
 
@@ -377,15 +378,19 @@ and the source item, concurrently, and refuses before writing:
 The write uses the SKU and source code as Magento stores them, never the input's casing, and the
 answer reports the previous quantity and status.
 
-**`add_order_comment`** — `readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true`
+**`add_order_comment`** — `readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true`
 
-Additive, not destructive; *not* idempotent, since calling it twice appends two comments.
+Destructive, because Magento saves the whole order with the comment and that save can move a lagging
+order's state; *not* idempotent, since calling it twice appends two comments.
 
 > Append a comment to an order's status history, by its increment ID — the customer-facing number
-> such as 000000123. The order itself is not changed: the comment records its current status. This
-> cannot be undone through this server, and calling it twice adds two comments. Set notifyCustomer
-> only when the shopper should receive an email — that sends real mail to a real person. Set
-> visibleOnFront to expose the comment in the customer's account area.
+> such as 000000123. The comment records the order's current status; this tool never sets one. Magento
+> saves the whole order with the comment, and saving re-derives the order's state from its invoices,
+> shipments and credit memos: an order whose state lags behind them moves, for example from processing
+> to complete. The answer reports the state before and after. This cannot be undone through this
+> server, and calling it twice adds two comments. Set notifyCustomer only when the shopper should
+> receive an email — that sends real mail to a real person. Set visibleOnFront to expose the comment
+> in the customer's account area.
 
 ```ts
 z.object({
@@ -396,9 +401,13 @@ z.object({
 })
 ```
 No `status`: 2.4.9 applies a comment's status to the order; see "Increment 7 — outcome".
-Output: `{ incrementId, status, notifyCustomer, visibleOnFront }` — the order's status, unchanged, and
-the email as requested, not as sent.
-Upstream: resolve increment ID → entity ID, then `POST /V1/orders/{entityId}/comments`.
+Output: `{ incrementId, previous: { state, status }, current?: { state, status }, notifyCustomer,
+visibleOnFront, notice? }` — the order before the comment, which the comment records, and after it,
+read again once the comment is stored; the email as requested, not as sent. `notice` says when Magento
+moved the order, or when it could not be read again, in which case `current` is absent and the answer
+is still a success.
+Upstream: resolve increment ID → entity ID, then `POST /V1/orders/{entityId}/comments`, then the
+same lookup again.
 
 ---
 
@@ -487,7 +496,7 @@ this invocation, and whether the operation is idempotent.
 | `RATE_LIMITED` | 429 | yes | Honours `Retry-After` when present — a proxy's, since Magento's own 429 carries none |
 | `UPSTREAM_UNAVAILABLE` | not reachable / timeout / interrupted; 502, 503, 504 | yes¹ | "Magento at {host} is not reachable." 503 is also Magento's maintenance mode. |
 | `UPSTREAM_ERROR` | other 5xx | yes¹ | Generic. Magento's 5xx message is withheld. |
-| `UPSTREAM_ERROR` | any other status | no | Something in front of Magento answered; a human operator must check it |
+| `UPSTREAM_ERROR` | any other status, a redirect, or a 2xx read without Magento's JSON | no | Something in front of Magento answered; a human operator must check it |
 | `INTERNAL_ERROR` | anything that is not a port error | no | A defect in this server; the details are in the server log |
 
 ¹ Not for a non-idempotent call whose outcome is uncertain: see "Writes that may already have been
@@ -539,7 +548,7 @@ listing *all* problems at once. `.env.example` is versioned; `.env` is gitignore
 
 ```
 MAGENTO_MODE=fixture                  # fixture | http   (default: fixture)
-MAGENTO_BASE_URL=                     # required when MAGENTO_MODE=http
+MAGENTO_BASE_URL=                     # required when MAGENTO_MODE=http; the store's base URL, https except on loopback
 MAGENTO_ACCESS_TOKEN=                 # required when MAGENTO_MODE=http; integration token
 MAGENTO_SOURCE_CODE=default           # MSI source for stock read/write
 MAGENTO_STOCK_ID=1                    # MSI stock for salable-quantity / is-salable
@@ -549,7 +558,12 @@ MAGENTO_FIXTURES_DIR=                 # default: the package's own fixtures/, wh
 LOG_LEVEL=info
 ```
 
-Two startup checks share one principle — **a misconfiguration must never be indistinguishable from
+`MAGENTO_BASE_URL` is the store's base URL, including the path of an install in a subdirectory; the
+http adapter appends `/rest/V1`, which addresses the default store view. In http mode it must be
+`https://`, except on loopback, and carry no credentials, query or fragment (see "Increment 8 —
+outcome").
+
+Three startup checks share one principle — **a misconfiguration must never be indistinguishable from
 correct operation**:
 
 1. **Write allowlist names are validated** against the known write-tool names, so a typo
@@ -559,9 +573,14 @@ correct operation**:
 2. **Fixture mode with http credentials present aborts** (the conflict guard above). Silently
    serving canned data to someone who configured a real store is the same class of bug pointed the
    other way: the system looks like it is working, and the operator has no signal that it is not.
+3. **A base URL that provably misses Magento's REST API aborts.** In http mode, before serving, the
+   adapter asks `GET /rest/V1/directory/currency`, an anonymous route. A redirect, a 404, or a 2xx that
+   is not Magento's JSON stops the server; a lookup's 404 would otherwise read as "does not exist",
+   and the store would look empty instead of misconfigured. An answer that proves nothing either way,
+   such as a timeout or a 503, logs a warning and serves.
 
-Both are covered by config tests asserting the process exits non-zero with a message naming the
-offending variable.
+The first two are covered by config tests, and all three by the process spec, each asserting the
+process exits non-zero with a message naming the offending variable.
 
 ---
 
@@ -622,11 +641,13 @@ Each increment ends green (`npm run typecheck && npm test`) and gets its own com
    See "Increment 6 — outcome" below.
 7. **Done. Write tools + the gate.** Both write tools, allowlist parsing, annotations.
    **Verify**: `tools/list` omits both when the allowlist is empty; lists exactly one when only one is
-   named; annotations assert `destructiveHint: true` on stock and `false` on the comment.
+   named; annotations assert `destructiveHint: true` on stock and `false` on the comment (`true` since
+   increment 8).
    See "Increment 7 — outcome" below.
-8. **← NEXT. HTTP client + docs.** `http-client.ts` against a real instance, README (setup, integration-token
+8. **Done. HTTP client + docs.** `http-client.ts` against a real instance, README (setup, integration-token
    ACLs, the write-gate rationale, the fixture story, the `openWorldHint` judgment call).
    **Verify**: `undici MockAgent` tests for status mapping; manual run against a real Magento.
+   See "Increment 8 — outcome" below.
 
 ---
 
@@ -765,7 +786,7 @@ scenario *values* stay hand-set, since sample data ships one customer and two or
   naming `Magento_CatalogInventory::cataloginventory` (for `stock_item`) next to its near-namesake
   `Magento_Catalog::catalog_inventory`. The http adapter maps a lookup 404 to `undefined` and any other
   non-2xx to `MagentoRequestError`, deciding on the status alone: a web server in front of Magento can
-  replace an error body with its own HTML page.
+  replace an error body with its own HTML page. **Done in increment 8.**
 
 ---
 
@@ -814,7 +835,8 @@ Read in the source rather than recalled:
   when the request certainly never left — parses `Retry-After` into seconds, and leaves `body`
   undefined for anything that is not Magento's JSON. Open for the owner: a wrong
   `MAGENTO_BASE_URL` path makes every lookup a 404, which the adapter reads as "does not exist", so a
-  misconfiguration looks like an empty store.
+  misconfiguration looks like an empty store. **Done in increment 8**, where the owner chose a startup
+  probe; see "Increment 8 — outcome".
 
 ---
 
@@ -895,7 +917,7 @@ the first of the two kinds of truncation. `projection/` also gained `html-text.t
   `Notices`. `get_customer`'s description says the group is a numeric ID whose name is not resolved.
   **Done in increment 6.** The search tools need no `Notices`: each result carries one sentence at
   most.
-- **Inc 8:** no new ACL resource is needed, so the README's list stays as it is.
+- **Inc 8:** no new ACL resource is needed, so the README's list stays as it is. **Done in increment 8.**
 
 ---
 
@@ -970,7 +992,8 @@ against a ceiling of 2,100.
   mapped with it: `add_order_comment` gets `{ idempotent: false, verifyBeforeRetry }`. The write gate
   goes into `createServer`, from `config.writeTools`. **Done in increment 7.**
 - **Inc 8:** replace the http exit in `index.ts` with the adapter. The logger already receives the
-  token as a secret in http mode; keep redaction at the sink rather than at each call site.
+  token as a secret in http mode; keep redaction at the sink rather than at each call site. **Done in
+  increment 8.**
 
 ---
 
@@ -1023,7 +1046,8 @@ bytes, most of it output schemas; nothing guards that figure yet.
 - **Inc 7:** the verify suggestion for `add_order_comment` can now point at `get_order`, which is
   registered. **Done in increment 7.**
 - **Inc 8:** confirm against the real instance that `eq` on `status` is case-insensitive, as it is on
-  `customer_email`. The fixture adapter and `isStockOrderStatus` both assume it.
+  `customer_email`. The fixture adapter and `isStockOrderStatus` both assume it. **Confirmed in
+  increment 8:** the smoke found the same order with `PROCESSING` as with `processing`.
 
 ---
 
@@ -1043,6 +1067,9 @@ source: the first two before any code, the third once the source showed a gap in
    their own do. A separate tool could add that later. `status` is gone from the port's
    `OrderCommentInput` too, so no adapter can send it. Keeping `status` with
    `destructiveHint: false` was not offered: the spec defines `false` as "only additive updates".
+   **Corrected in increment 8:** dropping `status` keeps the agent from choosing one, but it does not
+   make the call additive. The order save that follows can move a lagging order, so the tool is now
+   destructive; see "Increment 8 — outcome".
 2. **`update_product_stock` refuses a product with no row at the configured source** (`NOT_FOUND`),
    over upserting as the endpoint does. Assigning a product to a source is source selection, out of
    scope for v1, and on a multi-source install an upsert would silently widen where a product is
@@ -1113,7 +1140,150 @@ Token budget, measured: `tools/list` with both write tools enabled takes 17,587 
 
 - **Inc 8:** the README's ACL list gains the two write resources above and
   `Magento_InventoryApi::source`, and its write-gate section can cite the startup log line. The http
-  adapter's `addOrderComment` sends no `status`; the port gives it none to send.
+  adapter's `addOrderComment` sends no `status`; the port gives it none to send. **Done in increment 8.**
+
+---
+
+## Increment 8 — outcome (2026-10-09)
+
+Done. Before any code, the owner took three decisions, each offered with options checked against the
+2.4.9 sandbox, its source and ddev's configuration. The sandbox smoke then broke a premise of increment
+7, and the owner took two more.
+
+1. **A wrong base URL path: a probe at startup**, over a lazy probe on the first lookup 404, a static
+   check of the URL, and the status alone with documentation. Only three lookups read a 404 as
+   absence: `getProduct`, `getCustomerById` and `getSalableQuantity`. Every search already throws on a
+   404, which the mapper reports with the `MAGENTO_BASE_URL` hint when the body is not Magento's.
+   Before serving, the adapter asks `GET /rest/V1/directory/currency`, which is anonymous
+   (`module-directory/etc/webapi.xml:11-16`) and not among the routes `Magento_WebapiSecurity`
+   restricts (`module-webapi-security/etc/di.xml`). A redirect, a 404, or a 2xx that is not Magento's
+   currency JSON stops the server, naming the URL probed; when the base URL's path already holds
+   `/rest`, the message says the server adds it. Anything else — unreachable, a timeout, a 503 — warns
+   and serves. The probe proves the path, not the token: an unusable token is a guest, and a bogus
+   bearer drew a 200. Telling absence from misconfiguration by the 404's body was ruled out on
+   evidence: ddev's nginx sets `fastcgi_intercept_errors on` and replaces every Magento 404 body with
+   its own page, and the captured `product-missing`, `customer-missing` and `salable-qty-missing` are
+   all HTML.
+2. **Plain `http://` is refused unless the host is loopback**, over a warning and over accepting it.
+   Every request carries the token, and Magento never expires an integration token:
+   `ExpirationValidator.php:40` skips the check for `USER_TYPE_INTEGRATION`. Loopback stays allowed,
+   which also lets the process spec run a fake Magento on `127.0.0.1`. The same check refuses another
+   scheme, credentials, a query or a fragment.
+3. **The sandbox smoke covers reads and writes**, over reads only. It found what led to the next two.
+4. **`add_order_comment` is destructive**, over keeping `destructiveHint: false` with a report, and
+   over refusing a comment that would move the order.
+   - **What happened.** The smoke's comment moved order 000000001 from processing to complete, state
+     and status both, while the new history entry recorded `processing`.
+   - **The owner's hypothesis did not hold.** It held that the payload's status arrived null.
+     `OrderService.php:178,194-195` gives the entry the order's current status before
+     `addStatusHistory` (`Order.php:1817-1818`). A comment sent with `"status":"processing"`
+     explicitly — the fix the hypothesis implied — moved the order all the same.
+   - **The cause is the save.** `OrderService.php:198` → `OrderRepository.php:277` →
+     `ResourceModel/Order.php:174`, which runs `Handler\State::check` on every order save. For a
+     processing order that cannot ship (`State.php:63-69`), it overwrites state and status with complete
+     (`State.php:47-50`). The sandbox order had been invoiced and shipped in full since sample data
+     installed it, and was still processing.
+   - **REST has no additive comment.** The admin's comment form saves the order too
+     (`AddComment.php:63`), and no `webapi.xml` route saves a history entry alone. Dropping `status` in
+     increment 7 still keeps the agent from choosing one; it never made the call additive.
+   - **What the tool does now.** It reads the order again once the comment is stored, and reports
+     `previous` and `current` state and status, with a `notice` when Magento moved the order. A failed
+     re-read is still a success: `current` is absent, and a notice points at `get_order`.
+   - **Why not refuse.** Refusing would mean replicating `State::check`, which needs `canShip`,
+     `canInvoice` and `canCreditmemo` from data REST does not return (action flags, invoice states).
+     `false` would still not be guaranteed.
+5. **The fixture adapter models the save's reconciliation**, over leaving the order alone and testing
+   the moved path with a stub.
+   - **The divergence that hid the bug.** The fixture's comment recorded the current status, which was
+     right, and left the order alone, which was not. It kept 546 tests green over the bug.
+   - **What changed.** `reconciledState` mirrors `State::check` for what the fixtures hold: processing →
+     complete, and processing or complete → closed when refunded in full. Its doc lists what it omits.
+     A sixth order, 000000006, is invoiced and shipped but still processing, like the sandbox's.
+
+Taken as forced, and stated to the owner with the plan:
+
+- **No redirect is followed.** A followed 301 or 302 turns a POST into a GET, and its 2xx would report a
+  write that never happened. With `redirect: 'manual'`, undici returns the 3xx itself, and it becomes a
+  `MagentoRequestError`.
+- **`fetch` is injected.** Node 22.23.3 bundles undici 6.28.1, and the dev dependency is 8.10.2, whose
+  `MockAgent` should not be mixed into the bundled fetch's global dispatcher. The adapter takes a
+  minimal structural `Fetch`, the global one by default; the spec passes undici 8's own, bound to a
+  `MockAgent`.
+- **A write resolves on any 2xx without reading its body as JSON:** a stored write must never be
+  reported as failed.
+
+Two proposals were accepted with the plan. The README and `.env.example` lost the host-specific paths,
+since the repo is meant to be public. A 2xx read without JSON is a `MagentoRequestError(status)`, which
+the mapper words as an answer from the server at `MAGENTO_BASE_URL`.
+
+Read in the sandbox and its source:
+
+- **A pasted REST URL.** A base URL that already holds the REST prefix becomes `/rest/V1/rest/V1/…`, a
+  route miss (`Router.php:55-58`, 404).
+- **An unknown store code** is a 400 instead ("Specified request cannot be processed.",
+  `RequestProcessorPool.php:45-48`): `PathProcessor.php:75-76` keeps it in the path, which then fails
+  the `/V\d+` check. That case already failed loudly.
+- **`eq` on `status`.** `sales_order.status` is `utf8mb4_general_ci`, like `customer_email`, and the
+  smoke found 000000001 with `PROCESSING` as with `processing`.
+- **mkcert certificates.** Node does not trust mkcert's CA: `fetch` fails with
+  `UNABLE_TO_VERIFY_LEAF_SIGNATURE` until `NODE_EXTRA_CA_CERTS` points at it. The probe then warns and
+  serves.
+- **A slash in a SKU.** An encoded slash reaches the route on the sandbox's nginx: `products/a%2Fb` drew
+  a matched route's 401 without a token.
+- **undici's failure shapes.** A refused connection carries `cause.code` `ECONNREFUSED`, inside an
+  `AggregateError` for `localhost` too. The timeout signal rejects with a `TimeoutError`. fetch refuses
+  a blocklisted port with a cause of `bad port` and no code.
+- **Salable quantity after a write.** With the indexers on "Update by Schedule", salable quantity
+  followed a default-source write at once (100 → 101), as the fixture assumes.
+
+The smoke against the sandbox was run by the owner, with both write tools enabled.
+
+- **Coverage:** `tools/list` and 20 tool calls: every read tool, both write tools, a stock write and
+  its restore, the two refusals of `update_product_stock`, and the moved order.
+- **Results:** every outcome and every check was as expected. stdout carried JSON-RPC only, and the
+  server log holds no token, no `Bearer` and no `Authorization`.
+- **Sandbox state afterwards:**
+  - 24-MB01 is back at 100, set by the smoke itself.
+  - 000000001 is back at processing, set by SQL in `sales_order` and `sales_order_grid`.
+  - Three test comments stay in 000000001's history, since REST cannot delete one.
+
+What landed:
+
+- **`magento/http-client.ts`:** `HttpMagentoClient` and `checkRestApi`.
+  - The lookups by key read a 404 as `undefined`.
+  - Everything else outside 2xx is a `MagentoRequestError`. Magento's body is kept whole when it is
+    Magento's JSON, and `Retry-After` is converted to seconds.
+  - Failures become `MagentoUnavailableError`: `unreachable` only for a cause that rules out sending
+    (DNS, refused, unreachable host, connect timeout, TLS), and `interrupted` otherwise.
+  - A throw that is neither of undici's two network wordings is rethrown as a defect.
+  - One `debug` line per request.
+- **`config.ts`** refuses the URLs above in http mode. **`index.ts`** builds the adapter, runs the probe,
+  and then stops, warns, or announces `Magento REST API at …/rest/V1.` The mapper's wording below 400
+  changed.
+- **`add_order_comment`** as above, with the port's and both adapters' docs corrected.
+  `fixture-client.ts` gained `reconciledState`, and there is fixture order 000000006.
+- **The README** is rewritten around what exists:
+  - connecting a store;
+  - the ACL table, each resource read in its `webapi.xml` and `acl.xml`;
+  - the write gate and fixture mode;
+  - errors;
+  - the `openWorldHint` judgment call.
+- **Specs:**
+  - `tests/magento/http-client.test.ts`, with 80 cases;
+  - base-URL cases in the config spec;
+  - an http block in the process spec, against a `node:http` fake on loopback;
+  - the reconciliation in the fixture and tool specs.
+
+  559 tests, from 448.
+
+Token budget, measured: `add_order_comment` takes 2,346 bytes of `tools/list`, from 1,516. With both
+write tools enabled, `tools/list` takes 18,427, from 17,587.
+
+### Open items
+
+- **The size of `tools/list`** is still guarded by no test.
+- **A SKU with an encoded slash behind Apache** (`AllowEncodedSlashes`) is untested; the sandbox runs
+  nginx.
 
 ---
 
@@ -1137,7 +1307,10 @@ Token budget, measured: `tools/list` with both write tools enabled takes 17,587 
   no committed file in the repo contains a credential
 - Token-budget guard: a test asserting a 50-result `search_products` projection stays under a fixed
   byte ceiling, so a future field addition fails loudly instead of quietly inflating every call
-- Real-instance smoke (increment 8): `MAGENTO_MODE=http` against a live Magento, read tools only
+- Real-instance smoke (increment 8): `MAGENTO_MODE=http` against the 2.4.9 sandbox, every tool, reads
+  and writes, with the stock write set back afterwards; see "Increment 8 — outcome"
+- Base URL: the process spec refuses plain http to a remote host and a base URL that misses the REST
+  API, and serves with a warning when the probe cannot reach Magento
 
 ---
 

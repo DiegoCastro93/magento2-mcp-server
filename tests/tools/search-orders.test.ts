@@ -42,10 +42,11 @@ describe('search_orders', () => {
             '000000004',
             '000000003',
             '000000002',
-            '000000001'
+            '000000001',
+            '000000006'
         ]);
         expect(result).not.toHaveProperty('notice');
-        expect(text).toBe('5 orders match.');
+        expect(text).toBe('6 orders match.');
     });
 
     it('reduces every result to the summary allowlist', async () => {
@@ -69,8 +70,8 @@ describe('search_orders', () => {
     it('filters by status, whatever its case', async () => {
         const { result, text } = await answer({ status: 'Processing' });
 
-        expect(result.orders.map((order) => order.incrementId)).toEqual(['000000003']);
-        expect(text).toBe('1 order matches.');
+        expect(result.orders.map((order) => order.incrementId)).toEqual(['000000003', '000000006']);
+        expect(text).toBe('2 orders match.');
     });
 
     it("filters by the customer's email, whatever its case, guest orders included", async () => {
@@ -81,7 +82,7 @@ describe('search_orders', () => {
     describe('the date range', () => {
         it('includes the whole UTC day at either end', async () => {
             // 000000003 was placed at 23:30 on the 4th, 000000004 at midnight on the 5th.
-            expect(await ids({ createdTo: '2026-03-04' })).toEqual(['000000003', '000000002', '000000001']);
+            expect(await ids({ createdTo: '2026-03-04' })).toEqual(['000000003', '000000002', '000000001', '000000006']);
             expect(await ids({ createdFrom: '2026-03-05' })).toEqual(['000000005', '000000004']);
             expect(await ids({ createdFrom: '2026-02-10', createdTo: '2026-02-10' })).toEqual([
                 '000000002',
@@ -146,8 +147,8 @@ describe('search_orders', () => {
     it('says when a page is not the whole answer', async () => {
         const { result, text } = await answer({ pageSize: 2 });
 
-        expect(result.pagination).toMatchObject({ page: 1, pageSize: 2, totalCount: 5, totalPages: 3, hasMore: true });
-        expect(result.notice).toBe('Showing 2 of 5 orders (page 1 of 3). Narrow the filters or request page 2.');
-        expect(text).toBe(`5 orders match. ${result.notice}`);
+        expect(result.pagination).toMatchObject({ page: 1, pageSize: 2, totalCount: 6, totalPages: 3, hasMore: true });
+        expect(result.notice).toBe('Showing 2 of 6 orders (page 1 of 3). Narrow the filters or request page 2.');
+        expect(text).toBe(`6 orders match. ${result.notice}`);
     });
 });

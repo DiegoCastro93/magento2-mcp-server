@@ -169,7 +169,9 @@ describe('the write gate', () => {
         expect(names).toEqual([...READ_TOOL_NAMES, 'update_product_stock', 'add_order_comment']);
     });
 
-    it('marks the stock overwrite destructive and the comment additive, all four hints explicit', async () => {
+    // Both writes are destructive: a comment saves the whole order, which can
+    // move a lagging order's state. Only the absolute stock set repeats harmlessly.
+    it('marks both writes destructive and only the stock overwrite idempotent, all four hints explicit', async () => {
         const { tools } = await (await serve(fixtures, [...WRITE_TOOL_NAMES]).connected).listTools();
         const hints = (name: string) => tools.find((t) => t.name === name)?.annotations;
 
@@ -181,7 +183,7 @@ describe('the write gate', () => {
         });
         expect(hints('add_order_comment')).toEqual({
             readOnlyHint: false,
-            destructiveHint: false,
+            destructiveHint: true,
             idempotentHint: false,
             openWorldHint: true
         });

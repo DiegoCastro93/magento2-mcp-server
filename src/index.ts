@@ -12,7 +12,9 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { serveStdio } from '@modelcontextprotocol/server/stdio';
 import { ConfigError, loadConfig, type Config } from './config.js';
+import type { MagentoClient } from './magento/client.js';
 import { FixtureMagentoClient } from './magento/fixture-client.js';
+import { HttpMagentoClient } from './magento/http-client.js';
 import { PACKAGE_ROOT } from './package-root.js';
 import { createServer, type ServerInfo } from './server.js';
 import { createLogger, type Logger } from './shared/logger.js';
@@ -54,23 +56,12 @@ async function main(): Promise<void> {
 }
 
 async function serve(config: Config, logger: Logger): Promise<void> {
-    if (config.mode === 'http') {
-        logger.error(
-            'MAGENTO_MODE=http is not available yet: this build has no http adapter. Run with MAGENTO_MODE=fixture.'
-        );
+    const client =
+        config.mode === 'http' ? await connect(config, logger) : await loadFixtures(config.fixturesDir, logger);
+    if (client === undefined) {
         process.exitCode = 1;
         return;
     }
-
-    let client: FixtureMagentoClient;
-    try {
-        client = await FixtureMagentoClient.load(config.fixturesDir);
-    } catch (error) {
-        logger.error('Could not load the fixtures.', error);
-        process.exitCode = 1;
-        return;
-    }
-    fixtureBanner(config.fixturesDir);
 
     const serverInfo = await readServerInfo();
     const deps = {
@@ -97,6 +88,60 @@ async function serve(config: Config, logger: Logger): Promise<void> {
             ? 'No write tools enabled: read-only.'
             : `Write tools enabled: ${config.writeTools.join(', ')}.`
     );
+}
+
+/**
+ * The http adapter, once the startup probe has not ruled the base URL out.
+ * Every lookup by key reads a 404 as "does not exist", so a base URL that does
+ * not reach Magento would make the store look empty instead of misconfigured:
+ * that is refused here, like the config guards. A probe that proves nothing
+ * either way, such as a timeout, only warns, since Magento may be back by the
+ * first tool call.
+ *
+ * @returns `undefined` when the server must not start, already logged.
+ */
+async function connect(config: Extract<Config, { mode: 'http' }>, logger: Logger): Promise<MagentoClient | undefined> {
+    const client = new HttpMagentoClient({
+        baseUrl: config.baseUrl,
+        accessToken: config.accessToken,
+        timeoutMs: config.timeoutMs,
+        logger
+    });
+    const check = await client.checkRestApi();
+    switch (check.outcome) {
+        case 'ok':
+            logger.info(`Magento REST API at ${client.apiRoot}.`);
+            return client;
+        case 'inconclusive':
+            logger.warn(
+                "Could not confirm that MAGENTO_BASE_URL reaches Magento's REST API; serving anyway.",
+                check.error
+            );
+            return client;
+        case 'wrong-path': {
+            const hint = /(?:^|\/)rest(?:\/|$)/i.test(new URL(config.baseUrl).pathname)
+                ? "Its path already contains /rest: set it to the store's base URL; the server adds /rest/V1 itself."
+                : "Set it to the store's base URL, including the path of an install in a subdirectory.";
+            logger.error(
+                `MAGENTO_BASE_URL does not reach Magento's REST API: GET ${check.url} answered HTTP ${check.status}, ` +
+                    `not Magento. ${hint}`
+            );
+            return undefined;
+        }
+    }
+}
+
+/** @returns `undefined` when the fixtures cannot be loaded, already logged. */
+async function loadFixtures(fixturesDir: string, logger: Logger): Promise<MagentoClient | undefined> {
+    let client: FixtureMagentoClient;
+    try {
+        client = await FixtureMagentoClient.load(fixturesDir);
+    } catch (error) {
+        logger.error('Could not load the fixtures.', error);
+        return undefined;
+    }
+    fixtureBanner(fixturesDir);
+    return client;
 }
 
 /**

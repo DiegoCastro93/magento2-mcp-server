@@ -144,6 +144,20 @@ const TABLE: readonly Row[] = [
         message: 'Magento answered with an unexpected HTTP 413.'
     },
     {
+        name: 'a 200 without Magento JSON, such as an HTML page',
+        input: new MagentoRequestError(200),
+        code: 'UPSTREAM_ERROR',
+        retryable: false,
+        message: "The server at MAGENTO_BASE_URL answered HTTP 200 without Magento's JSON."
+    },
+    {
+        name: 'a redirect, which the http adapter never follows',
+        input: new MagentoRequestError(302),
+        code: 'UPSTREAM_ERROR',
+        retryable: false,
+        message: "The server at MAGENTO_BASE_URL answered HTTP 302 without Magento's JSON."
+    },
+    {
         name: 'unreachable',
         input: new MagentoUnavailableError(HOST, 'unreachable'),
         code: 'UPSTREAM_UNAVAILABLE',

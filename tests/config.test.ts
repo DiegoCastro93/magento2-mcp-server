@@ -85,6 +85,67 @@ describe('loadConfig', () => {
 
             expect(problems.join('\n')).toContain('not a valid URL');
         });
+
+        describe('base URL', () => {
+            const http = (baseUrl: string) => ({
+                MAGENTO_MODE: 'http',
+                MAGENTO_BASE_URL: baseUrl,
+                MAGENTO_ACCESS_TOKEN: TOKEN
+            });
+
+            // Every request carries the token, and Magento never expires an
+            // integration token: in clear text it would be readable on the way.
+            it('refuses plain http to a remote host, naming the risk', () => {
+                const problems = expectProblems(http('http://shop.example.com'));
+
+                expect(problems).toHaveLength(1);
+                expect(problems[0]).toContain('uses http:// for shop.example.com');
+                expect(problems[0]).toContain('clear text');
+                expect(problems[0]).not.toContain(TOKEN);
+            });
+
+            it.each(['http://localhost:8080', 'http://127.0.0.1', 'http://127.1.2.3/shop', 'http://[::1]:8443'])(
+                'accepts plain http on loopback: %s',
+                (baseUrl) => {
+                    expect(loadConfig(http(baseUrl)).mode).toBe('http');
+                }
+            );
+
+            it('accepts the path of an install in a subdirectory', () => {
+                const config = loadConfig(http('https://shop.example.com/magento/'));
+
+                expect(config.mode === 'http' && config.baseUrl).toBe('https://shop.example.com/magento/');
+            });
+
+            it('refuses a scheme other than http or https', () => {
+                expect(expectProblems(http('ftp://shop.example.com'))[0]).toContain('must be an https:// URL, not ftp://');
+            });
+
+            it('refuses a username or password, without echoing them', () => {
+                const problems = expectProblems(http('https://admin:hunter2@shop.example.com'));
+
+                expect(problems).toHaveLength(1);
+                expect(problems[0]).toContain('must not contain a username or password');
+                expect(problems[0]).not.toContain('hunter2');
+            });
+
+            it.each(['https://shop.example.com/?store=default', 'https://shop.example.com/#top'])(
+                'refuses a query or a fragment: %s',
+                (baseUrl) => {
+                    expect(expectProblems(http(baseUrl))[0]).toContain('without a query or fragment');
+                }
+            );
+
+            it('reports every base URL problem in one run', () => {
+                expect(expectProblems(http('http://user:pw@shop.example.com/?a=1'))).toHaveLength(3);
+            });
+
+            // In fixture mode a base URL is already refused by the conflict
+            // guard, which names the real mistake.
+            it('leaves fixture mode to the conflict guard', () => {
+                expect(expectProblems({ MAGENTO_BASE_URL: 'http://shop.example.com' })).toHaveLength(1);
+            });
+        });
     });
 
     describe('fixture/credential conflict guard', () => {

@@ -136,7 +136,13 @@ function fromStatus(error: MagentoRequestError, context: UpstreamContext): ToolE
 
     // Magento itself answers only the statuses above, so this came from
     // something in front of it, and repeating the request will not change it.
-    return new ToolError('UPSTREAM_ERROR', `Magento answered with an unexpected HTTP ${status}.`, {
+    // Below 400 it is a redirect, or a 2xx without Magento's JSON: an answer,
+    // just not Magento's.
+    const message =
+        status < 400
+            ? `The server at MAGENTO_BASE_URL answered HTTP ${status} without Magento's JSON.`
+            : `Magento answered with an unexpected HTTP ${status}.`;
+    return new ToolError('UPSTREAM_ERROR', message, {
         retryable: false,
         suggestion: 'A human operator must check the server in front of Magento; retrying will not help.',
         cause: error

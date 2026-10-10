@@ -38,7 +38,16 @@ interface BaseConfig {
  */
 export type Config =
     | (BaseConfig & { readonly mode: 'fixture' })
-    | (BaseConfig & { readonly mode: 'http'; readonly baseUrl: string; readonly accessToken: string });
+    | (BaseConfig & {
+          readonly mode: 'http';
+          /**
+           * The store's base URL, such as `https://shop.example.com`, including
+           * the path of an install in a subdirectory. The server appends
+           * `/rest/V1` itself, which addresses the default store view.
+           */
+          readonly baseUrl: string;
+          readonly accessToken: string;
+      });
 
 /** Carries every validation failure, so one run reports all of them. */
 export class ConfigError extends Error {
@@ -71,6 +80,42 @@ function parseInteger(value: string, key: string, problems: string[], fallback: 
 }
 
 /**
+ * What makes a well-formed URL unusable as the store's base URL. None of the
+ * messages echoes the URL, which may hold a password.
+ *
+ * Plain http is refused beyond loopback because every request carries the
+ * integration token, and Magento never expires one: `ExpirationValidator`
+ * skips the check for integration tokens.
+ */
+function baseUrlProblems(url: URL): string[] {
+    const problems: string[] = [];
+    if (url.protocol === 'http:') {
+        if (!isLoopback(url.hostname)) {
+            problems.push(
+                `MAGENTO_BASE_URL uses http:// for ${url.hostname}, which would send the access token in clear ` +
+                    'text. Use https://; plain http is accepted only for localhost.'
+            );
+        }
+    } else if (url.protocol !== 'https:') {
+        problems.push(`MAGENTO_BASE_URL must be an https:// URL, not ${url.protocol}//.`);
+    }
+    if (url.username !== '' || url.password !== '') {
+        problems.push(
+            'MAGENTO_BASE_URL must not contain a username or password; the server authenticates with ' +
+                'MAGENTO_ACCESS_TOKEN.'
+        );
+    }
+    if (url.search !== '' || url.hash !== '') {
+        problems.push("MAGENTO_BASE_URL must be the store's base URL, without a query or fragment.");
+    }
+    return problems;
+}
+
+function isLoopback(hostname: string): boolean {
+    return hostname === 'localhost' || hostname === '[::1]' || /^127(?:\.\d{1,3}){3}$/.test(hostname);
+}
+
+/**
  * Validates an environment and returns the configuration it describes.
  *
  * @throws {ConfigError} listing every problem found, never just the first.
@@ -88,11 +133,13 @@ export function loadConfig(env: Env): Config {
     const accessToken = read(env, 'MAGENTO_ACCESS_TOKEN');
 
     if (baseUrl !== undefined) {
+        let parsed: URL | undefined;
         try {
-            new URL(baseUrl);
+            parsed = new URL(baseUrl);
         } catch {
             problems.push(`MAGENTO_BASE_URL is not a valid URL: "${baseUrl}".`);
         }
+        if (parsed !== undefined && mode === 'http') problems.push(...baseUrlProblems(parsed));
     }
 
     if (mode === 'http') {

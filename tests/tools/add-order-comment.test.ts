@@ -7,6 +7,7 @@ import { AddOrderCommentOutputSchema, type AddOrderCommentOutput } from '../../s
 import { defineGetOrder } from '../../src/tools/read/get-order.js';
 import { defineAddOrderComment } from '../../src/tools/write/add-order-comment.js';
 import { wire } from '../projection/fixtures.js';
+import type { Logger } from '../../src/shared/logger.js';
 import { failing, loadFixtureClient, memoryLogger, override, refusalOf } from './client-stubs.js';
 
 const TIMEOUT = new MagentoUnavailableError('shop.example.com', 'timeout');
@@ -21,8 +22,8 @@ beforeEach(async () => {
     store = await loadFixtureClient();
 });
 
-function tool(client: MagentoClient = store) {
-    return defineAddOrderComment({ client, logger: memoryLogger().logger, sourceCode: 'default', stockId: 1 });
+function tool(client: MagentoClient = store, logger = memoryLogger().logger) {
+    return defineAddOrderComment({ client, logger, sourceCode: 'default', stockId: 1 });
 }
 
 type Input = z.input<ReturnType<typeof tool>['inputSchema']>;
@@ -31,8 +32,12 @@ type Input = z.input<ReturnType<typeof tool>['inputSchema']>;
  * Parses `input` as the SDK would, and returns the answer as it would cross
  * stdio, checked against the output schema.
  */
-async function answer(input: Input, client?: MagentoClient): Promise<{ result: AddOrderCommentOutput; text: string }> {
-    const definition = tool(client);
+async function answer(
+    input: Input,
+    client?: MagentoClient,
+    logger?: Logger
+): Promise<{ result: AddOrderCommentOutput; text: string }> {
+    const definition = tool(client, logger);
     const { structuredContent, text } = await definition.handler(definition.inputSchema.parse(input));
     const result = wire(structuredContent);
     expect(AddOrderCommentOutputSchema.safeParse(result).success).toBe(true);
@@ -61,10 +66,12 @@ function counting(client: MagentoClient): { client: MagentoClient; writes: () =>
 const NOTE = { incrementId: '000000003', comment: 'Packed and waiting for pickup.' };
 
 describe('add_order_comment', () => {
-    it('declares itself additive and not idempotent, all four hints explicit', () => {
+    // Magento saves the whole order with the comment, which can move a
+    // lagging order's state: the call is not purely additive.
+    it('declares itself destructive and not idempotent, all four hints explicit', () => {
         expect(tool().annotations).toStrictEqual({
             readOnlyHint: false,
-            destructiveHint: false,
+            destructiveHint: true,
             idempotentHint: false,
             openWorldHint: true
         });
@@ -74,12 +81,13 @@ describe('add_order_comment', () => {
         });
     });
 
-    it("appends a comment, and leaves the order's status as it was", async () => {
+    it('appends a comment, and reports a consistent order as left where it was', async () => {
         const { result, text } = await answer(NOTE);
 
         expect(result).toStrictEqual({
             incrementId: '000000003',
-            status: 'processing',
+            previous: { state: 'processing', status: 'processing' },
+            current: { state: 'processing', status: 'processing' },
             notifyCustomer: false,
             visibleOnFront: false
         });
@@ -118,8 +126,52 @@ describe('add_order_comment', () => {
     it('takes no status: one sent anyway is dropped, and the answer shows the order kept its own', async () => {
         const { result } = await answer({ ...NOTE, status: 'fraud' } as Input);
 
-        expect(result.status).toBe('processing');
+        expect(result.current?.status).toBe('processing');
         expect((await store.findOrderByIncrementId('000000003'))?.status).toBe('processing');
+    });
+
+    // 000000006 is invoiced and shipped in full but still processing, like the
+    // sample-data order that moved on the 2.4.9 sandbox.
+    it('reports a lagging order that the save moved on, as Magento does', async () => {
+        const { result, text } = await answer({ incrementId: '000000006', comment: 'Tracking number sent.' });
+
+        const notice =
+            "Saving the comment made Magento re-derive the order's state from its invoices, shipments and credit " +
+            'memos: it moved from processing to complete.';
+        expect(result).toStrictEqual({
+            incrementId: '000000006',
+            previous: { state: 'processing', status: 'processing' },
+            current: { state: 'complete', status: 'complete' },
+            notifyCustomer: false,
+            visibleOnFront: false,
+            notice
+        });
+        expect(text).toBe(`Added a comment to order 000000006 (processing); the customer was not notified. ${notice}`);
+
+        const order = await store.findOrderByIncrementId('000000006');
+        expect(order?.status_histories?.[0]).toMatchObject({ comment: 'Tracking number sent.', status: 'processing' });
+    });
+
+    // The comment is stored by then: the answer must not become a failure.
+    it('still answers when the order cannot be read again, and says how to check', async () => {
+        let lookups = 0;
+        const client = override(store, {
+            findOrderByIncrementId: (incrementId) =>
+                ++lookups === 1 ? store.findOrderByIncrementId(incrementId) : Promise.reject(TIMEOUT)
+        });
+        const { logger, output } = memoryLogger();
+
+        const { result } = await answer(NOTE, client, logger);
+
+        expect(result).toStrictEqual({
+            incrementId: '000000003',
+            previous: { state: 'processing', status: 'processing' },
+            notifyCustomer: false,
+            visibleOnFront: false,
+            notice: 'The comment was stored, but the order could not be read again: check its status with get_order.'
+        });
+        expect((await store.findOrderByIncrementId('000000003'))?.status_histories).toHaveLength(1);
+        expect(output()).toContain('WARN add_order_comment re-read: UPSTREAM_UNAVAILABLE');
     });
 
     it('caps the comment at 2,000 characters in its input schema', () => {

@@ -66,8 +66,12 @@ export interface MagentoClient {
 
     /**
      * Appends to the order's status history, newest first. The entry records
-     * the order's current status, and the order keeps it: see
-     * {@link OrderCommentInput} for why there is no status to send.
+     * the order's current status: see {@link OrderCommentInput} for why there
+     * is no status to send. Magento then saves the whole order, and every
+     * order save re-derives the state from its invoices, shipments and credit
+     * memos (`ResourceModel\Order::save` runs `Handler\State::check`), so an
+     * order whose state lags behind them moves on, such as from processing to
+     * complete. A caller that reports the outcome reads the order again.
      *
      * @param orderId the internal `entity_id`, not the increment ID.
      * @throws {MagentoRequestError} 404 for an unknown order.
@@ -181,10 +185,11 @@ export interface SourceItemUpdate {
 }
 
 /**
- * A comment, and nothing that changes the order. Magento 2.4.9's endpoint also
- * takes a status, and *applies* it to the order (`OrderService::addComment`):
- * on a stock install, that can flag an order as `fraud`. Leaving it out of the
- * port is what keeps `add_order_comment` purely additive, in every adapter.
+ * A comment, and no status. Magento 2.4.9's endpoint also takes a status, and
+ * *applies* it to the order (`OrderService::addComment`): on a stock install,
+ * that can flag an order as `fraud`. Leaving it out of the port keeps the
+ * caller from choosing one, in every adapter. It does not make the call purely
+ * additive: see {@link MagentoClient.addOrderComment}.
  */
 export interface OrderCommentInput {
     readonly comment: string;

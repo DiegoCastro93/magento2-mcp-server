@@ -194,6 +194,12 @@ export const GetCustomerOutputSchema = z.strictObject({
     customer: CustomerSchema
 });
 
+/** An order as a comment write sees it, before and after. */
+const OrderStateSchema = z.strictObject({
+    state: z.string(),
+    status: z.string()
+});
+
 /** A source item as a stock write sees it, before and after. */
 const SourceItemStateSchema = z.strictObject({
     quantity: z.number(),
@@ -214,14 +220,20 @@ export const UpdateProductStockOutputSchema = z.strictObject({
  */
 export const AddOrderCommentOutputSchema = z.strictObject({
     incrementId: z.string(),
-    status: z.string().describe("The order's status, recorded with the comment and left unchanged."),
+    previous: OrderStateSchema.describe("The order's state and status before the comment, which records the status."),
+    current: OrderStateSchema.optional().describe(
+        "The order's state and status after the comment. Magento saves the whole order with it, which can move an " +
+            'order whose state lags behind its invoices, shipments and credit memos. Absent when the order could ' +
+            'not be read again.'
+    ),
     notifyCustomer: z
         .boolean()
         .describe(
             'Whether an email to the customer was requested. Magento sends it only when order comment emails ' +
                 'are enabled in its configuration.'
         ),
-    visibleOnFront: z.boolean()
+    visibleOnFront: z.boolean(),
+    notice: z.string().optional()
 });
 
 export type ProductSummary = z.infer<typeof ProductSummarySchema>;

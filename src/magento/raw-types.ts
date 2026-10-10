@@ -95,6 +95,13 @@ export interface RawOrderItem {
      * child's SKU.
      */
     readonly parent_item_id?: number | null;
+    // The fulfilment counters an order save reads to re-derive the state.
+    readonly qty_invoiced?: number | null;
+    readonly qty_shipped?: number | null;
+    readonly qty_refunded?: number | null;
+    readonly qty_canceled?: number | null;
+    /** 1 for a line that ships nothing, such as a virtual product. */
+    readonly is_virtual?: number | null;
 }
 
 /** A billing or shipping address as stored on an order. */
@@ -146,6 +153,10 @@ export interface RawOrder {
     /** Zero or negative. */
     readonly discount_amount?: number | null;
     readonly grand_total: number;
+    readonly total_paid?: number | null;
+    readonly total_refunded?: number | null;
+    /** 1 when nothing in the order ships. */
+    readonly is_virtual?: number | null;
     /**
      * Magento's count of leaf rows (`ResourceModel\Order::calculateItems`): a row
      * with children is skipped and each child is counted, so a bundle with

@@ -49,6 +49,16 @@ The server defaults to `MAGENTO_MODE=fixture`, so it runs with no configuration 
 npm run inspector   # builds, then opens the MCP Inspector on dist/index.js
 ```
 
+Or register it with Claude Code:
+
+```bash
+claude mcp add magento -- node /path/to/magento2-mcp-server/dist/index.js
+```
+
+Either way it starts in fixture mode with no configuration. Call `get_product`
+with `24-MB01` for a product with its full stock, or with `24-WG085_Group` to
+see how the answer explains a grouped product, which has no stock of its own.
+
 In fixture mode the server says so on stderr and serves the demo catalogue in `fixtures/`. Call
 `get_product` with `24-MB01` for a product with its full stock, or with `24-WG085_Group` to see how
 the answer explains a grouped product, which has no stock of its own.
@@ -245,6 +255,31 @@ A write that fails after it may have reached Magento — a timeout, a 5xx, or a 
 email that failed after the comment was stored — is never marked retryable, and its suggestion says
 how to check first. The server log on stderr carries the detail the agent never sees, with the token
 redacted.
+
+## Verified against Magento, not assumed
+
+1. addStatusHistory() does transition the order (increment 2)
+The original contract stated that status in a comment “does not transition the order.” Order::addStatusHistory() calls setStatus($history->getStatus()). Source: module-sales/Model/Order.php, Model/Service/OrderService.php.
+
+2. The payment title is not at additional_information[0] (increment 4)
+The plan assumed that index. ToOrderPayment::convert appends method_title after the quote’s own keys, so index 0 holds the title only for methods with no additional information. The reliable source is extension_attributes.payment_additional_info[key=method_title].
+
+3. A 400 does not mean nothing was applied (increment 7)
+The error table classified a 400 as “definitely not applied.” An SMTP failure throws a MailException after the order has already been saved, and the Web API converts it into a 400. Source: Transport.php:247.
+
+4. MAGENTO_DEFAULT_MANAGE_STOCK was redundant (increment 5)
+The plan introduced this variable on the assumption that REST returned the raw column value. stock_item.manage_stock already contains the effective value resolved by Stock\Item::getManageStock(). The variable would have replaced actual data with an assumption.
+
+5. Commenting on an order can change its state (increment 8)
+Removing status from the payload was not enough: State.php:41-50 re-derives state and status from invoices, shipments, and credit memos after save. This was caught by the smoke test against a real Magento instance, not by reading the source. destructiveHint was changed from false to true.
+
+## Known limitations
+
+1. Nothing guards the size of tools/list.
+With both write tools enabled, it comes to 18,427 bytes. That payload is paid on every startup of every client, and it consumes context before the first call. The project does have a byte-size guard for the search_products projection, but not for tools/list: adding a description or a field to a schema inflates it without any test failing.
+
+2. An SKU with an encoded slash is untested behind Apache.
+The adapter encodes path segments, and products/a%2Fb reaches the route correctly on the sandbox’s nginx. Apache, with AllowEncodedSlashes at its default value, rejects %2F with a 404 before the request reaches PHP. This wasn’t tested because the sandbox runs nginx.
 
 ## Scope
 

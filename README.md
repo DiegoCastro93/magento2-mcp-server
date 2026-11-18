@@ -259,16 +259,16 @@ redacted.
 ## Verified against Magento, not assumed
 
 1. addStatusHistory() does transition the order (increment 2)
-The original contract stated that status in a comment “does not transition the order.” Order::addStatusHistory() calls setStatus($history->getStatus()). Source: module-sales/Model/Order.php, Model/Service/OrderService.php.
+The original contract stated that status in a comment “does not transition the order.” Order::addStatusHistory() calls setStatus($history->getStatus()). Source: module-sales/Model/Order.php, Model/Service/OrderService.php. The status argument was removed from add_order_comment, so an agent cannot choose an order’s status through this server.
 
 2. The payment title is not at additional_information[0] (increment 4)
 The plan assumed that index. ToOrderPayment::convert appends method_title after the quote’s own keys, so index 0 holds the title only for methods with no additional information. The reliable source is extension_attributes.payment_additional_info[key=method_title].
 
 3. A 400 does not mean nothing was applied (increment 7)
-The error table classified a 400 as “definitely not applied.” An SMTP failure throws a MailException after the order has already been saved, and the Web API converts it into a 400. Source: Transport.php:247.
+The error table classified a 400 as “definitely not applied.” An SMTP failure throws a MailException after the order has already been saved, and the Web API converts it into a 400. Source: Transport.php:247. On a non-idempotent write, a 400 now keeps INVALID_INPUT but is never retryable, and its suggestion tells the agent to check the order before retrying.
 
 4. MAGENTO_DEFAULT_MANAGE_STOCK was redundant (increment 5)
-The plan introduced this variable on the assumption that REST returned the raw column value. stock_item.manage_stock already contains the effective value resolved by Stock\Item::getManageStock(). The variable would have replaced actual data with an assumption.
+The plan introduced this variable on the assumption that REST returned the raw column value. stock_item.manage_stock already contains the effective value resolved by Stock\Item::getManageStock(). The variable would have replaced actual data with an assumption. It was removed, along with the manageStockSource field that existed only to flag the fallback.
 
 5. Commenting on an order can change its state (increment 8)
 Removing status from the payload was not enough: State.php:41-50 re-derives state and status from invoices, shipments, and credit memos after save. This was caught by the smoke test against a real Magento instance, not by reading the source. destructiveHint was changed from false to true.
